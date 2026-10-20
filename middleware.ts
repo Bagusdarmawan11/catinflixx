@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/auth/jwt";
-import { AUTH_CONFIG } from "@/config";
+
+// Nama cookie harus sinkron dengan AUTH_CONFIG.cookieName di config/index.ts
+const SESSION_COOKIE = "catinflix_session";
 
 // Route yang membutuhkan autentikasi
 const PROTECTED_ROUTES = ["/watchlist", "/watch-party", "/profile"];
@@ -16,9 +17,9 @@ export function middleware(req: NextRequest) {
   );
   const isAuthRoute = AUTH_ROUTES.some((route) => pathname.startsWith(route));
 
-  const token = req.cookies.get(AUTH_CONFIG.cookieName)?.value;
-  const payload = token ? verifyToken(token) : null;
-  const isAuthenticated = payload !== null;
+  // Di Edge Runtime kita hanya bisa cek keberadaan cookie.
+  // Verifikasi penuh (JWT signature) dilakukan di setiap API route / Server Component.
+  const isAuthenticated = !!req.cookies.get(SESSION_COOKIE)?.value;
 
   // Redirect ke login jika akses route protected tanpa auth
   if (isProtected && !isAuthenticated) {
