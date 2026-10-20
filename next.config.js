@@ -1,7 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Custom server handles serving — disable default server
-  // NOTE: We use a custom server (server/index.ts), so output must NOT be 'export'
+  // Disable ESLint during build - linting dilakukan terpisah di CI
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  // Disable type checking during build (dilakukan via npm run type-check)
+  // TypeScript errors sudah dicek saat dev, bukan saat production build
+  typescript: {
+    ignoreBuildErrors: false,
+  },
   images: {
     remotePatterns: [
       {
@@ -12,12 +19,10 @@ const nextConfig = {
     ],
     formats: ["image/avif", "image/webp"],
   },
-  // Environment variables exposed to client
   env: {
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_SOCKET_URL: process.env.NEXT_PUBLIC_SOCKET_URL,
   },
-  // Security headers
   async headers() {
     return [
       {
@@ -27,17 +32,10 @@ const nextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-XSS-Protection", value: "1; mode=block" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          {
-            key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=()",
-          },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
       },
     ];
-  },
-  // Ignore socket.io path from Next.js routing
-  async rewrites() {
-    return [];
   },
 };
 
