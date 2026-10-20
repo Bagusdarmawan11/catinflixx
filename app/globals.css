@@ -1,0 +1,166 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* CatinFlix Design Tokens */
+  --cf-bg: #0f0f13;
+  --cf-bg-secondary: #16161d;
+  --cf-bg-card: #1a1a24;
+  --cf-bg-elevated: #22222f;
+  --cf-border: #2a2a3a;
+  --cf-border-subtle: #1e1e2a;
+
+  --cf-text: #f0f0f5;
+  --cf-text-secondary: #a0a0b8;
+  --cf-text-muted: #6b6b88;
+
+  --cf-accent: #e63946;
+  --cf-accent-hover: #c1121f;
+  --cf-accent-muted: #e6394620;
+
+  --cf-success: #2dc653;
+  --cf-warning: #f4a261;
+  --cf-error: #e63946;
+
+  --cf-radius: 8px;
+  --cf-radius-sm: 4px;
+  --cf-radius-lg: 12px;
+  --cf-radius-xl: 16px;
+
+  --cf-transition: 150ms ease;
+  --cf-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --cf-shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--cf-bg);
+    color: var(--cf-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--cf-bg-secondary);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--cf-border);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--cf-text-muted);
+  }
+
+  ::selection {
+    background: var(--cf-accent-muted);
+    color: var(--cf-text);
+  }
+}
+
+@layer components {
+  .cf-container {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .cf-card {
+    background: var(--cf-bg-card);
+    border: 1px solid var(--cf-border-subtle);
+    border-radius: var(--cf-radius-lg);
+    transition: all var(--cf-transition);
+  }
+
+  .cf-card:hover {
+    border-color: var(--cf-border);
+    transform: translateY(-2px);
+    box-shadow: var(--cf-shadow);
+  }
+
+  .cf-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white transition-all duration-150;
+    background: var(--cf-accent);
+  }
+
+  .cf-btn-primary:hover:not(:disabled) {
+    background: var(--cf-accent-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(230, 57, 70, 0.35);
+  }
+
+  .cf-btn-primary:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  .cf-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-all duration-150;
+    color: var(--cf-text-secondary);
+    border: 1px solid var(--cf-border);
+  }
+
+  .cf-btn-ghost:hover:not(:disabled) {
+    color: var(--cf-text);
+    border-color: var(--cf-text-muted);
+    background: var(--cf-bg-elevated);
+  }
+
+  .cf-input {
+    @apply w-full rounded-lg px-4 py-3 text-sm outline-none transition-all duration-150;
+    background: var(--cf-bg-elevated);
+    border: 1px solid var(--cf-border);
+    color: var(--cf-text);
+  }
+
+  .cf-input:focus {
+    border-color: var(--cf-accent);
+    box-shadow: 0 0 0 3px var(--cf-accent-muted);
+  }
+
+  .cf-input::placeholder {
+    color: var(--cf-text-muted);
+  }
+
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--cf-bg-elevated) 25%,
+      var(--cf-border) 50%,
+      var(--cf-bg-elevated) 75%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-loading 1.5s infinite;
+    border-radius: var(--cf-radius);
+  }
+}
+
+@keyframes skeleton-loading {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease forwards;
+}
