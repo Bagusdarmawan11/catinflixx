@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const payload = verifyToken(token);
+    const payload = await verifyToken(token);
     if (!payload) {
       return NextResponse.json(
         { success: false, error: "Token tidak valid atau sudah kedaluwarsa" },

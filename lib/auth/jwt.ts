@@ -1,4 +1,4 @@
-import jwt from "jsonwebtoken";
+import { SignJWT, jwtVerify } from "jose";
 import { AUTH_CONFIG } from "@/config";
 
 export interface JWTPayload {
@@ -7,22 +7,29 @@ export interface JWTPayload {
   name: string;
 }
 
-export function signToken(payload: JWTPayload): string {
+function getSecret(): Uint8Array {
   if (!AUTH_CONFIG.jwtSecret) {
     throw new Error("JWT_SECRET is not configured");
   }
-  return jwt.sign(payload, AUTH_CONFIG.jwtSecret, {
-    expiresIn: AUTH_CONFIG.jwtExpiresIn,
-  });
+  return new TextEncoder().encode(AUTH_CONFIG.jwtSecret);
 }
 
-export function verifyToken(token: string): JWTPayload | null {
+export async function signToken(payload: JWTPayload): Promise<string> {
+  return new SignJWT({ ...payload })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(AUTH_CONFIG.jwtExpiresIn)
+    .sign(getSecret());
+}
+
+export async function verifyToken(token: string): Promise<JWTPayload | null> {
   try {
-    if (!AUTH_CONFIG.jwtSecret) {
-      throw new Error("JWT_SECRET is not configured");
-    }
-    const decoded = jwt.verify(token, AUTH_CONFIG.jwtSecret) as JWTPayload;
-    return decoded;
+    const { payload } = await jwtVerify(token, getSecret());
+    return {
+      userId: payload.userId as number,
+      email: payload.email as string,
+      name: payload.name as string,
+    };
   } catch {
     return null;
   }

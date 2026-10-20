@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
         createdAt: users.createdAt,
       });
 
-    const token = signToken({
+    const token = await signToken({
       userId: newUser.id,
       email: newUser.email,
       name: newUser.name,
