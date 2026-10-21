@@ -1,44 +1,71 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMovieDetail, getTvDetail } from "@/lib/tmdb/client";
-import type { MediaType } from "@/lib/tmdb/types";
 
 export const runtime = "nodejs";
 
-interface RouteParams {
-  params: { id: string };
-}
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const { searchParams } = new URL(_req.url);
+  const type = searchParams.get("type") || "movie";
+  const id = parseInt(params.id);
 
-export async function GET(req: NextRequest, { params }: RouteParams) {
+  if (isNaN(id)) {
+    return NextResponse.json({ success: false, error: "ID tidak valid" }, { status: 400 });
+  }
+
   try {
-    const id = parseInt(params.id, 10);
-    if (isNaN(id) || id <= 0) {
-      return NextResponse.json(
-        { success: false, error: "ID film tidak valid" },
-        { status: 400 }
-      );
+    let detail;
+    if (type === "tv") {
+      detail = await getTvDetail(id);
+    } else {
+      detail = await getMovieDetail(id);
     }
 
-    const { searchParams } = req.nextUrl;
-    const mediaType = (searchParams.get("type") as MediaType) ?? "movie";
+    // Fetch credits (cast) from TMDB
+    const TMDB_BASE_URL = "https://api.themoviedb.org/3";
+    const endpoint = type === "tv" ? "tv" : "movie";
+    const creditsRes = await fetch(
+      `${TMDB_BASE_URL}/${endpoint}/${id}/credits?language=id-ID`,
+      {
+        headers: getAuthHeader(),
+        next: { revalidate: 300 },
+      }
+    );
 
-    if (mediaType !== "movie" && mediaType !== "tv") {
-      return NextResponse.json(
-        { success: false, error: "Parameter type harus movie atau tv" },
-        { status: 400 }
-      );
+    if (creditsRes.ok) {
+      const credits = await creditsRes.json();
+      detail.cast = (credits.cast || [])
+        .slice(0, 15)
+        .map((person: any) => ({
+          id: person.id,
+          name: person.name,
+          character: person.character,
+          profilePath: person.profile_path,
+        }));
     }
-
-    const detail = mediaType === "movie"
-      ? await getMovieDetail(id)
-      : await getTvDetail(id);
 
     return NextResponse.json({ success: true, data: detail });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Terjadi kesalahan server";
-    console.error(`[API] /movies/${params.id} error:`, err);
-    const status = message === "Not found" ? 404
-      : message.includes("rate limit") ? 429
-      : message.includes("authentication") ? 401 : 500;
-    return NextResponse.json({ success: false, error: message }, { status });
+  } catch (err: any) {
+    if (err.message?.includes("404")) {
+      return NextResponse.json({ success: false, error: "Konten tidak ditemukan" }, { status: 404 });
+    }
+    if (err.message?.includes("401")) {
+      return NextResponse.json({ success: false, error: "Autentikasi TMDB gagal" }, { status: 401 });
+    }
+    return NextResponse.json(
+      { success: false, error: "Gagal mengambil detail" },
+      { status: 500 }
+    );
   }
+}
+
+function getAuthHeader(): HeadersInit {
+  const token = process.env.TMDB_API_TOKEN;
+  if (!token) throw new Error("TMDB_API_TOKEN not set");
+  if (token.startsWith("eyJ")) {
+    return { Authorization: `Bearer ${token}` };
+  }
+  return {}; // will be handled via query param fallback
 }

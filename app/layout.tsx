@@ -1,26 +1,24 @@
-import type { Metadata, Viewport } from "next";
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
+import Navbar from "@/components/layout/Navbar";
+import Footer from "@/components/layout/Footer";
+
+const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: {
-    default: "CatinFlix",
+    default: "CatinFlix — Streaming Film & Serial",
     template: "%s | CatinFlix",
   },
   description:
-    "Platform katalog dan streaming film modern — drama Korea, China, Indonesia, dan lebih banyak lagi.",
-  keywords: ["streaming", "film", "drakor", "drama", "series", "watch party"],
-  robots: { index: true, follow: true },
+    "Platform streaming film dan serial TV terlengkap dengan fitur Watch Party untuk nonton bareng teman.",
+  keywords: ["streaming", "film", "serial", "watch party", "bioskop online"],
   openGraph: {
+    title: "CatinFlix",
+    description: "Platform streaming film dan serial TV terlengkap",
     type: "website",
-    locale: "id_ID",
-    siteName: "CatinFlix",
   },
-};
-
-export const viewport: Viewport = {
-  width: "device-width",
-  initialScale: 1,
-  themeColor: "#0f0f13",
 };
 
 export default function RootLayout({
@@ -29,8 +27,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="id">
-      <body className="bg-cf-bg text-cf-text antialiased">{children}</body>
+    <html lang="id" className="scroll-smooth">
+      <body className={`${inter.className} bg-gray-950 text-white antialiased`}>
+        <Navbar />
+        <div className="min-h-screen">{children}</div>
+        <Footer />
+      </body>
     </html>
   );
 }
