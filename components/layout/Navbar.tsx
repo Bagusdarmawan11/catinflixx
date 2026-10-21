@@ -25,8 +25,8 @@ export default function Navbar() {
 
   useEffect(() => {
     fetchUser();
-    const handleScroll = () => setScrolled(window.scrollY > 20);
-    window.addEventListener("scroll", handleScroll);
+    const handleScroll = () => setScrolled(window.scrollY > 10);
+    window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
@@ -36,9 +36,7 @@ export default function Navbar() {
   }, [pathname]);
 
   useEffect(() => {
-    if (searchOpen && searchRef.current) {
-      searchRef.current.focus();
-    }
+    if (searchOpen && searchRef.current) searchRef.current.focus();
   }, [searchOpen]);
 
   useEffect(() => {
@@ -85,19 +83,24 @@ export default function Navbar() {
     { href: "/browse", label: "Jelajahi" },
   ];
 
+  // Liquid glass: saat scroll, pakai backdrop-blur + glass border
+  // Saat di atas halaman (belum scroll), transparan dengan gradient bawah
+  const navBg = scrolled || menuOpen
+    ? "bg-gray-950/60 backdrop-blur-xl border-b border-white/10 shadow-[0_4px_32px_rgba(0,0,0,0.4)]"
+    : "bg-gradient-to-b from-black/70 to-transparent";
+
   return (
-    <nav
-      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
-        scrolled || menuOpen
-          ? "bg-gray-950/95 backdrop-blur-md shadow-lg"
-          : "bg-gradient-to-b from-gray-950 to-transparent"
-      }`}
-    >
+    <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${navBg}`}>
+      {/* Glass shimmer line saat scrolled */}
+      {scrolled && (
+        <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+      )}
+
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2 flex-shrink-0">
-            <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center shadow-lg shadow-red-900/50">
               <Film className="w-5 h-5 text-white" />
             </div>
             <span className="text-white font-bold text-xl tracking-tight">
@@ -106,24 +109,32 @@ export default function Navbar() {
           </Link>
 
           {/* Desktop Nav Links */}
-          <div className="hidden md:flex items-center gap-6">
-            {navLinks.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className={`text-sm font-medium transition-colors ${
-                  pathname === link.href || (link.href !== "/" && pathname?.startsWith(link.href.split("?")[0]))
-                    ? "text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                {link.label}
-              </Link>
-            ))}
+          <div className="hidden md:flex items-center gap-1">
+            {navLinks.map((link) => {
+              const isActive =
+                pathname === link.href ||
+                (link.href !== "/" && pathname?.startsWith(link.href.split("?")[0]));
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`relative px-4 py-2 text-sm font-medium rounded-full transition-all duration-200 ${
+                    isActive
+                      ? "text-white bg-white/10"
+                      : "text-gray-300 hover:text-white hover:bg-white/8"
+                  }`}
+                >
+                  {link.label}
+                  {isActive && (
+                    <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-red-500 rounded-full" />
+                  )}
+                </Link>
+              );
+            })}
           </div>
 
           {/* Right side */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             {/* Search */}
             {searchOpen ? (
               <form onSubmit={handleSearch} className="flex items-center">
@@ -133,26 +144,26 @@ export default function Navbar() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Cari film, serial..."
-                  className="bg-gray-800 text-white text-sm px-4 py-2 rounded-l-full border border-gray-700 focus:outline-none focus:border-red-500 w-48 sm:w-64"
+                  className="bg-white/10 backdrop-blur-md text-white text-sm px-4 py-2 rounded-l-full border border-white/20 focus:outline-none focus:border-red-400/60 w-44 sm:w-60 placeholder-gray-400"
                 />
                 <button
                   type="submit"
-                  className="bg-red-600 px-3 py-2 rounded-r-full hover:bg-red-700 transition-colors"
+                  className="bg-red-600 px-3 py-2 rounded-r-full hover:bg-red-500 transition-colors"
                 >
                   <Search className="w-4 h-4 text-white" />
                 </button>
                 <button
                   type="button"
                   onClick={() => setSearchOpen(false)}
-                  className="ml-2 text-gray-400 hover:text-white"
+                  className="ml-2 text-gray-400 hover:text-white p-1"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="w-4 h-4" />
                 </button>
               </form>
             ) : (
               <button
                 onClick={() => setSearchOpen(true)}
-                className="text-gray-400 hover:text-white p-2 transition-colors"
+                className="text-gray-300 hover:text-white p-2 rounded-full hover:bg-white/10 transition-all"
                 aria-label="Cari"
               >
                 <Search className="w-5 h-5" />
@@ -164,9 +175,9 @@ export default function Navbar() {
               <div className="relative" ref={userMenuRef}>
                 <button
                   onClick={() => setUserMenuOpen(!userMenuOpen)}
-                  className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-full transition-colors"
+                  className="flex items-center gap-2 bg-white/10 hover:bg-white/15 backdrop-blur-sm border border-white/10 px-3 py-1.5 rounded-full transition-all"
                 >
-                  <div className="w-6 h-6 bg-red-600 rounded-full flex items-center justify-center">
+                  <div className="w-6 h-6 bg-gradient-to-br from-red-500 to-red-700 rounded-full flex items-center justify-center shadow-sm">
                     <span className="text-white text-xs font-bold">
                       {user.name.charAt(0).toUpperCase()}
                     </span>
@@ -177,35 +188,31 @@ export default function Navbar() {
                 </button>
 
                 {userMenuOpen && (
-                  <div className="absolute right-0 top-full mt-2 w-48 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl overflow-hidden">
-                    <div className="px-4 py-3 border-b border-gray-800">
+                  <div className="absolute right-0 top-full mt-2 w-52 bg-gray-900/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+                    {/* Glass top shimmer */}
+                    <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+
+                    <div className="px-4 py-3 border-b border-white/10">
                       <p className="text-white text-sm font-medium truncate">{user.name}</p>
                       <p className="text-gray-400 text-xs truncate">{user.email}</p>
                     </div>
-                    <Link
-                      href="/profile"
-                      className="flex items-center gap-3 px-4 py-3 text-gray-300 hover:text-white hover:bg-gray-800 transition-colors text-sm"
-                    >
-                      <User className="w-4 h-4" />
-                      Profil
-                    </Link>
-                    <Link
-                      href="/watchlist"
-                      className="flex items-center gap-3 px-4 py-3 text-gray-300 hover:text-white hover:bg-gray-800 transition-colors text-sm"
-                    >
-                      <Bookmark className="w-4 h-4" />
-                      Watchlist
-                    </Link>
-                    <Link
-                      href="/watch-party"
-                      className="flex items-center gap-3 px-4 py-3 text-gray-300 hover:text-white hover:bg-gray-800 transition-colors text-sm"
-                    >
-                      <Users className="w-4 h-4" />
-                      Watch Party
-                    </Link>
+                    {[
+                      { href: "/profile", icon: User, label: "Profil" },
+                      { href: "/watchlist", icon: Bookmark, label: "Watchlist" },
+                      { href: "/watch-party", icon: Users, label: "Watch Party" },
+                    ].map(({ href, icon: Icon, label }) => (
+                      <Link
+                        key={href}
+                        href={href}
+                        className="flex items-center gap-3 px-4 py-3 text-gray-300 hover:text-white hover:bg-white/8 transition-colors text-sm"
+                      >
+                        <Icon className="w-4 h-4" />
+                        {label}
+                      </Link>
+                    ))}
                     <button
                       onClick={handleLogout}
-                      className="w-full flex items-center gap-3 px-4 py-3 text-red-400 hover:text-red-300 hover:bg-gray-800 transition-colors text-sm border-t border-gray-800"
+                      className="w-full flex items-center gap-3 px-4 py-3 text-red-400 hover:text-red-300 hover:bg-white/8 transition-colors text-sm border-t border-white/10"
                     >
                       <LogOut className="w-4 h-4" />
                       Keluar
@@ -217,13 +224,13 @@ export default function Navbar() {
               <div className="hidden sm:flex items-center gap-2">
                 <Link
                   href="/login"
-                  className="text-gray-300 hover:text-white text-sm font-medium px-3 py-2 transition-colors"
+                  className="text-gray-300 hover:text-white text-sm font-medium px-3 py-2 rounded-full hover:bg-white/10 transition-all"
                 >
                   Masuk
                 </Link>
                 <Link
                   href="/register"
-                  className="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded-full transition-colors"
+                  className="bg-red-600 hover:bg-red-500 text-white text-sm font-semibold px-4 py-2 rounded-full transition-all shadow-lg shadow-red-900/30"
                 >
                   Daftar
                 </Link>
@@ -233,7 +240,7 @@ export default function Navbar() {
             {/* Mobile menu toggle */}
             <button
               onClick={() => setMenuOpen(!menuOpen)}
-              className="md:hidden text-gray-400 hover:text-white p-2"
+              className="md:hidden text-gray-300 hover:text-white p-2 rounded-full hover:bg-white/10 transition-all"
               aria-label="Menu"
             >
               {menuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -243,22 +250,22 @@ export default function Navbar() {
 
         {/* Mobile menu */}
         {menuOpen && (
-          <div className="md:hidden border-t border-gray-800 py-4 space-y-1">
+          <div className="md:hidden border-t border-white/10 py-3 space-y-1">
             {navLinks.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
-                className="block px-4 py-3 text-gray-300 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                className="block px-4 py-3 text-gray-300 hover:text-white hover:bg-white/10 rounded-xl transition-colors text-sm"
               >
                 {link.label}
               </Link>
             ))}
             {!user && (
-              <div className="flex gap-2 px-4 pt-2">
-                <Link href="/login" className="flex-1 text-center py-2 border border-gray-700 rounded-full text-gray-300 hover:text-white text-sm">
+              <div className="flex gap-2 px-2 pt-2">
+                <Link href="/login" className="flex-1 text-center py-2 border border-white/20 rounded-full text-gray-300 hover:text-white text-sm backdrop-blur-sm">
                   Masuk
                 </Link>
-                <Link href="/register" className="flex-1 text-center py-2 bg-red-600 rounded-full text-white text-sm hover:bg-red-700">
+                <Link href="/register" className="flex-1 text-center py-2 bg-red-600 rounded-full text-white text-sm hover:bg-red-500">
                   Daftar
                 </Link>
               </div>

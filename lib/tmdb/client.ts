@@ -1,218 +1,270 @@
-import { TMDB_CONFIG } from "@/config";
-import type {
-  TmdbMovie,
-  TmdbTvShow,
-  TmdbMovieDetail,
-  TmdbTvDetail,
-  TmdbGenre,
-  TmdbVideo,
-  TmdbPaginatedResponse,
-  MediaCard,
-  MediaDetail,
-  MediaType,
-} from "./types";
+const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
-// ─── Auth Helper ─────────────────────────────────────────────────────────────
-
-function getAuthHeader(): Record<string, string> {
-  const bearerToken = process.env.TMDB_API_TOKEN;
-  const apiKey = process.env.TMDB_API_KEY;
-
-  if (bearerToken && bearerToken.startsWith("eyJ")) {
-    // API Read Access Token (JWT)
-    return { Authorization: `Bearer ${bearerToken}` };
+function getAuthHeader(): HeadersInit {
+  const token = process.env.TMDB_API_TOKEN;
+  if (!token) throw new Error("TMDB_API_TOKEN is not configured");
+  if (token.startsWith("eyJ")) {
+    return { Authorization: `Bearer ${token}` };
   }
-
-  if (apiKey) {
-    // Fallback ke API Key v3 via header tidak didukung — perlu query param
-    // Kembalikan header kosong, fetchTmdb akan tambahkan ke URL
-    return {};
-  }
-
-  throw new Error("TMDB credentials not configured. Set TMDB_API_TOKEN or TMDB_API_KEY.");
+  // Fallback: API key v3 via query param (handled in fetchTmdb)
+  return {};
 }
 
-function getApiKeyParam(): string {
-  const bearerToken = process.env.TMDB_API_TOKEN;
-  if (bearerToken && bearerToken.startsWith("eyJ")) return ""; // bearer token, tidak perlu key param
+function buildUrl(path: string, params: Record<string, string> = {}): string {
+  const token = process.env.TMDB_API_TOKEN;
+  const url = new URL(`${TMDB_BASE_URL}${path}`);
 
-  const apiKey = process.env.TMDB_API_KEY ?? process.env.TMDB_API_TOKEN;
-  if (apiKey) return `&api_key=${apiKey}`;
+  // Always add language
+  url.searchParams.set("language", "id-ID");
 
-  return "";
+  // If not bearer token, use api_key param
+  if (token && !token.startsWith("eyJ")) {
+    url.searchParams.set("api_key", token);
+  }
+
+  for (const [key, val] of Object.entries(params)) {
+    if (val) url.searchParams.set(key, val);
+  }
+
+  return url.toString();
 }
-
-// ─── Fetch Utility ────────────────────────────────────────────────────────────
 
 async function fetchTmdb<T>(path: string, params: Record<string, string> = {}): Promise<T> {
-  const queryString = new URLSearchParams({
-    language: TMDB_CONFIG.defaultLanguage,
-    ...params,
-  }).toString();
-
-  const url = `${TMDB_CONFIG.baseUrl}${path}?${queryString}${getApiKeyParam()}`;
-
+  const url = buildUrl(path, params);
   const res = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...getAuthHeader(),
-    },
-    next: { revalidate: 300 }, // cache 5 menit
+    headers: getAuthHeader(),
+    next: { revalidate: 300 },
   });
 
   if (!res.ok) {
-    if (res.status === 429) throw new Error("TMDB rate limit exceeded");
-    if (res.status === 401) throw new Error("TMDB authentication failed");
-    if (res.status === 404) throw new Error("Not found");
-    throw new Error(`TMDB API error: ${res.status}`);
+    throw new Error(`TMDB ${res.status}: ${path}`);
   }
 
-  return res.json() as Promise<T>;
+  return res.json();
 }
 
-// ─── Normalizers ─────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-function normalizeMovie(movie: TmdbMovie, mediaType: MediaType = "movie"): MediaCard {
+export interface MediaCard {
+  id: number;
+  mediaType: "movie" | "tv";
+  title: string;
+  overview: string;
+  posterPath: string | null;
+  backdropPath: string | null;
+  releaseDate: string;
+  voteAverage: number;
+  voteCount: number;
+  genreIds: number[];
+}
+
+export interface MediaDetail extends MediaCard {
+  originalTitle: string;
+  genres: { id: number; name: string }[];
+  runtime: number | null;
+  language: string;
+  status: string;
+  tagline: string | null;
+  budget: number | null;
+  revenue: number | null;
+  seasons: number | null;
+  episodes: number | null;
+  videos: { key: string; site: string; type: string; name: string }[];
+  cast?: { id: number; name: string; character: string; profilePath: string | null }[];
+}
+
+export interface PaginatedResponse<T> {
+  results: T[];
+  page: number;
+  total: number;
+  totalPages: number;
+}
+
+// ─── Normalizers ──────────────────────────────────────────────────────────────
+
+function normalizeMovie(m: any): MediaCard {
   return {
-    id: movie.id,
-    mediaType,
-    title: "title" in movie ? movie.title : (movie as unknown as TmdbTvShow).name,
-    overview: movie.overview,
-    posterPath: movie.poster_path,
-    backdropPath: movie.backdrop_path,
-    releaseDate: "release_date" in movie ? movie.release_date : (movie as unknown as TmdbTvShow).first_air_date,
-    voteAverage: movie.vote_average,
-    voteCount: movie.vote_count,
-    genreIds: movie.genre_ids ?? [],
+    id: m.id,
+    mediaType: "movie",
+    title: m.title || m.original_title || "Unknown",
+    overview: m.overview || "",
+    posterPath: m.poster_path || null,
+    backdropPath: m.backdrop_path || null,
+    releaseDate: m.release_date || "",
+    voteAverage: m.vote_average || 0,
+    voteCount: m.vote_count || 0,
+    genreIds: m.genre_ids || [],
   };
 }
 
-function getBestTrailer(videos: TmdbVideo[]): TmdbVideo | null {
-  const youtubeTrailers = videos.filter(
-    (v) => v.site === "YouTube" && v.type === "Trailer" && v.official
-  );
-  return youtubeTrailers[0] ?? videos.find((v) => v.site === "YouTube") ?? null;
+function normalizeTv(t: any): MediaCard {
+  return {
+    id: t.id,
+    mediaType: "tv",
+    title: t.name || t.original_name || "Unknown",
+    overview: t.overview || "",
+    posterPath: t.poster_path || null,
+    backdropPath: t.backdrop_path || null,
+    releaseDate: t.first_air_date || "",
+    voteAverage: t.vote_average || 0,
+    voteCount: t.vote_count || 0,
+    genreIds: t.genre_ids || [],
+  };
 }
 
-// ─── Public API Functions ─────────────────────────────────────────────────────
+function normalizeItem(item: any): MediaCard {
+  const type = item.media_type || (item.title ? "movie" : "tv");
+  return type === "movie" ? normalizeMovie(item) : normalizeTv(item);
+}
+
+// ─── API Functions ─────────────────────────────────────────────────────────────
 
 export async function getTrending(
-  mediaType: MediaType | "all" = "all",
-  timeWindow: "day" | "week" = "week",
+  type: "all" | "movie" | "tv" = "all",
+  window: "day" | "week" = "week",
   page = 1
-): Promise<{ results: MediaCard[]; totalPages: number; totalResults: number }> {
-  const data = await fetchTmdb<TmdbPaginatedResponse<TmdbMovie & { media_type?: string }>>(
-    `/trending/${mediaType}/${timeWindow}`,
-    { page: String(page) }
-  );
-
-  const results = data.results.map((item) => {
-    const type: MediaType = (item.media_type as MediaType) ?? mediaType === "all" ? "movie" : (mediaType as MediaType);
-    return normalizeMovie(item, type);
+): Promise<PaginatedResponse<MediaCard>> {
+  const data = await fetchTmdb<any>(`/trending/${type}/${window}`, {
+    page: String(page),
   });
-
-  return { results, totalPages: data.total_pages, totalResults: data.total_results };
+  return {
+    results: (data.results || []).map(normalizeItem),
+    page: data.page || 1,
+    total: data.total_results || 0,
+    totalPages: data.total_pages || 1,
+  };
 }
 
 export async function searchMulti(
   query: string,
   page = 1
-): Promise<{ results: MediaCard[]; totalPages: number; totalResults: number }> {
-  const data = await fetchTmdb<TmdbPaginatedResponse<(TmdbMovie | TmdbTvShow) & { media_type: string }>>(
-    "/search/multi",
-    { query, page: String(page), include_adult: "false" }
-  );
-
-  const results = data.results
-    .filter((item) => item.media_type === "movie" || item.media_type === "tv")
-    .map((item) => normalizeMovie(item as TmdbMovie, item.media_type as MediaType));
-
-  return { results, totalPages: data.total_pages, totalResults: data.total_results };
+): Promise<PaginatedResponse<MediaCard>> {
+  const data = await fetchTmdb<any>("/search/multi", {
+    query,
+    page: String(page),
+    include_adult: "false",
+  });
+  return {
+    results: (data.results || [])
+      .filter((r: any) => r.media_type === "movie" || r.media_type === "tv")
+      .map(normalizeItem),
+    page: data.page || 1,
+    total: data.total_results || 0,
+    totalPages: data.total_pages || 1,
+  };
 }
 
 export async function getMovieDetail(id: number): Promise<MediaDetail> {
-  const data = await fetchTmdb<TmdbMovieDetail>(`/movie/${id}`, {
-    append_to_response: "videos",
-  });
+  const [detail, videos] = await Promise.all([
+    fetchTmdb<any>(`/movie/${id}`),
+    fetchTmdb<any>(`/movie/${id}/videos`),
+  ]);
 
   return {
-    id: data.id,
+    id: detail.id,
     mediaType: "movie",
-    title: data.title,
-    overview: data.overview,
-    posterPath: data.poster_path,
-    backdropPath: data.backdrop_path,
-    releaseDate: data.release_date,
-    voteAverage: data.vote_average,
-    voteCount: data.vote_count,
-    genreIds: data.genres.map((g) => g.id),
-    genres: data.genres,
-    runtime: data.runtime,
-    status: data.status,
-    tagline: data.tagline,
-    originalLanguage: data.original_language,
-    trailer: getBestTrailer(data.videos?.results ?? []),
+    title: detail.title || detail.original_title,
+    originalTitle: detail.original_title || "",
+    overview: detail.overview || "",
+    posterPath: detail.poster_path || null,
+    backdropPath: detail.backdrop_path || null,
+    releaseDate: detail.release_date || "",
+    voteAverage: detail.vote_average || 0,
+    voteCount: detail.vote_count || 0,
+    genreIds: (detail.genres || []).map((g: any) => g.id),
+    genres: detail.genres || [],
+    runtime: detail.runtime || null,
+    language: detail.original_language || "",
+    status: detail.status || "",
+    tagline: detail.tagline || null,
+    budget: detail.budget || null,
+    revenue: detail.revenue || null,
+    seasons: null,
+    episodes: null,
+    videos: (videos.results || []).map((v: any) => ({
+      key: v.key,
+      site: v.site,
+      type: v.type,
+      name: v.name,
+    })),
   };
 }
 
 export async function getTvDetail(id: number): Promise<MediaDetail> {
-  const data = await fetchTmdb<TmdbTvDetail>(`/tv/${id}`, {
-    append_to_response: "videos",
-  });
+  const [detail, videos] = await Promise.all([
+    fetchTmdb<any>(`/tv/${id}`),
+    fetchTmdb<any>(`/tv/${id}/videos`),
+  ]);
 
   return {
-    id: data.id,
+    id: detail.id,
     mediaType: "tv",
-    title: data.name,
-    overview: data.overview,
-    posterPath: data.poster_path,
-    backdropPath: data.backdrop_path,
-    releaseDate: data.first_air_date,
-    voteAverage: data.vote_average,
-    voteCount: data.vote_count,
-    genreIds: data.genres.map((g) => g.id),
-    genres: data.genres,
-    runtime: data.episode_run_time[0] ?? null,
-    status: data.status,
-    tagline: data.tagline,
-    originalLanguage: data.original_language,
-    trailer: getBestTrailer(data.videos?.results ?? []),
+    title: detail.name || detail.original_name,
+    originalTitle: detail.original_name || "",
+    overview: detail.overview || "",
+    posterPath: detail.poster_path || null,
+    backdropPath: detail.backdrop_path || null,
+    releaseDate: detail.first_air_date || "",
+    voteAverage: detail.vote_average || 0,
+    voteCount: detail.vote_count || 0,
+    genreIds: (detail.genres || []).map((g: any) => g.id),
+    genres: detail.genres || [],
+    runtime: detail.episode_run_time?.[0] || null,
+    language: detail.original_language || "",
+    status: detail.status || "",
+    tagline: detail.tagline || null,
+    budget: null,
+    revenue: null,
+    seasons: detail.number_of_seasons || null,
+    episodes: detail.number_of_episodes || null,
+    videos: (videos.results || []).map((v: any) => ({
+      key: v.key,
+      site: v.site,
+      type: v.type,
+      name: v.name,
+    })),
   };
 }
 
-export async function getGenres(mediaType: "movie" | "tv" = "movie"): Promise<TmdbGenre[]> {
-  const data = await fetchTmdb<{ genres: TmdbGenre[] }>(`/genre/${mediaType}/list`);
-  return data.genres;
+export async function getGenres(type: "movie" | "tv"): Promise<{ id: number; name: string }[]> {
+  const data = await fetchTmdb<any>(`/genre/${type}/list`);
+  return data.genres || [];
+}
+
+export interface DiscoverParams {
+  type?: "movie" | "tv";
+  page?: number;
+  genre?: string;
+  year?: string;
+  sort?: string;
+  lang?: string;
 }
 
 export async function discoverMedia(
-  mediaType: MediaType,
-  params: {
-    page?: number;
-    genreId?: number;
-    year?: number;
-    sortBy?: string;
-    withOriginalLanguage?: string;
-  } = {}
-): Promise<{ results: MediaCard[]; totalPages: number; totalResults: number }> {
-  const query: Record<string, string> = {
-    page: String(params.page ?? 1),
-    sort_by: params.sortBy ?? "popularity.desc",
-    include_adult: "false",
+  params: DiscoverParams = {}
+): Promise<PaginatedResponse<MediaCard>> {
+  const { type = "movie", page = 1, genre, year, sort = "popularity.desc", lang } = params;
+
+  const queryParams: Record<string, string> = {
+    page: String(page),
+    sort_by: sort,
+    "vote_count.gte": "50",
   };
 
-  if (params.genreId) query.with_genres = String(params.genreId);
-  if (params.year) {
-    if (mediaType === "movie") query.primary_release_year = String(params.year);
-    else query.first_air_date_year = String(params.year);
+  if (genre) queryParams.with_genres = genre;
+  if (lang) queryParams.with_original_language = lang;
+  if (year) {
+    if (type === "movie") queryParams.primary_release_year = year;
+    else queryParams.first_air_date_year = year;
   }
-  if (params.withOriginalLanguage) query.with_original_language = params.withOriginalLanguage;
 
-  const data = await fetchTmdb<TmdbPaginatedResponse<TmdbMovie | TmdbTvShow>>(
-    `/discover/${mediaType}`,
-    query
-  );
+  const data = await fetchTmdb<any>(`/discover/${type}`, queryParams);
 
-  const results = data.results.map((item) => normalizeMovie(item as TmdbMovie, mediaType));
-  return { results, totalPages: data.total_pages, totalResults: data.total_results };
+  const normalizer = type === "movie" ? normalizeMovie : normalizeTv;
+  return {
+    results: (data.results || []).map(normalizer),
+    page: data.page || 1,
+    total: data.total_results || 0,
+    totalPages: data.total_pages || 1,
+  };
 }
