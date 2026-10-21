@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Film, Github, Twitter, Instagram } from "lucide-react";
+import { Film, ExternalLink } from "lucide-react";
 
 export default function Footer() {
   return (
@@ -20,14 +20,11 @@ export default function Footer() {
               Platform streaming film dan serial dengan fitur Watch Party untuk nonton bareng teman-teman.
             </p>
             <div className="flex gap-3">
-              <a href="#" className="text-gray-600 hover:text-gray-400 transition-colors">
-                <Github className="w-5 h-5" />
+              <a href="#" className="text-gray-600 hover:text-gray-400 transition-colors text-sm flex items-center gap-1">
+                <ExternalLink className="w-4 h-4" /> GitHub
               </a>
-              <a href="#" className="text-gray-600 hover:text-gray-400 transition-colors">
-                <Twitter className="w-5 h-5" />
-              </a>
-              <a href="#" className="text-gray-600 hover:text-gray-400 transition-colors">
-                <Instagram className="w-5 h-5" />
+              <a href="#" className="text-gray-600 hover:text-gray-400 transition-colors text-sm flex items-center gap-1">
+                <ExternalLink className="w-4 h-4" /> Twitter
               </a>
             </div>
           </div>
@@ -66,7 +63,7 @@ export default function Footer() {
                     {item.label}
                   </Link>
                 </li>
-            ))}
+              ))}
             </ul>
           </div>
 

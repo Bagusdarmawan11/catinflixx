@@ -9,8 +9,14 @@ const nextConfig = {
       },
     ],
   },
-  // Required for custom Node.js server
-  output: undefined,
+  eslint: {
+    // ESLint tidak diinstall di project ini, skip saat build
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    // Tetap check TypeScript, tapi tidak block build
+    ignoreBuildErrors: false,
+  },
 };
 
 module.exports = nextConfig;

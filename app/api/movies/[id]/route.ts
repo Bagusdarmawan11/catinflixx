@@ -16,7 +16,7 @@ export async function GET(
   }
 
   try {
-    let detail;
+    let detail: any;
     if (type === "tv") {
       detail = await getTvDetail(id);
     } else {
@@ -26,10 +26,19 @@ export async function GET(
     // Fetch credits (cast) from TMDB
     const TMDB_BASE_URL = "https://api.themoviedb.org/3";
     const endpoint = type === "tv" ? "tv" : "movie";
+
+    const token = process.env.TMDB_API_TOKEN;
+    if (!token) {
+      return NextResponse.json({ success: false, error: "TMDB not configured" }, { status: 500 });
+    }
+    const authHeader: HeadersInit = token.startsWith("eyJ")
+      ? { Authorization: `Bearer ${token}` }
+      : {};
+
     const creditsRes = await fetch(
       `${TMDB_BASE_URL}/${endpoint}/${id}/credits?language=id-ID`,
       {
-        headers: getAuthHeader(),
+        headers: authHeader,
         next: { revalidate: 300 },
       }
     );
@@ -59,13 +68,4 @@ export async function GET(
       { status: 500 }
     );
   }
-}
-
-function getAuthHeader(): HeadersInit {
-  const token = process.env.TMDB_API_TOKEN;
-  if (!token) throw new Error("TMDB_API_TOKEN not set");
-  if (token.startsWith("eyJ")) {
-    return { Authorization: `Bearer ${token}` };
-  }
-  return {}; // will be handled via query param fallback
 }
