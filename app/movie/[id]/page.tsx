@@ -2,9 +2,11 @@ import { Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Star, Clock, Calendar, Globe, Play, ArrowLeft, Bookmark, Users } from "lucide-react";
+import { Star, Clock, Calendar, Globe, Play, ArrowLeft, Users } from "lucide-react";
 import type { Metadata } from "next";
 import MediaRow from "@/components/movie/MediaRow";
+import { getMovieDetail, getTvDetail, getTrending } from "@/lib/tmdb/client";
+import WatchlistButton from "@/components/movie/WatchlistButton";
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
@@ -13,29 +15,44 @@ interface PageProps {
   searchParams: { type?: string };
 }
 
-async function getDetail(id: string, type: string) {
+async function getDetail(id: number, type: string) {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-    const res = await fetch(`${baseUrl}/api/movies/${id}?type=${type}`, {
-      next: { revalidate: 300 },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.data || null;
+    if (type === "tv") return await getTvDetail(id);
+    return await getMovieDetail(id);
   } catch {
     return null;
   }
 }
 
-async function getSimilar(id: string, type: string) {
+async function getCast(id: number, type: string) {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-    const res = await fetch(`${baseUrl}/api/movies/trending?type=${type}&window=week&page=1`, {
-      next: { revalidate: 300 },
-    });
+    const token = process.env.TMDB_API_TOKEN;
+    if (!token) return [];
+    const authHeader: HeadersInit = token.startsWith("eyJ")
+      ? { Authorization: `Bearer ${token}` }
+      : {};
+    const endpoint = type === "tv" ? "tv" : "movie";
+    const res = await fetch(
+      `https://api.themoviedb.org/3/${endpoint}/${id}/credits?language=id-ID`,
+      { headers: authHeader, next: { revalidate: 300 } }
+    );
     if (!res.ok) return [];
     const data = await res.json();
-    return (data.results || []).filter((item: any) => String(item.id) !== id).slice(0, 20);
+    return (data.cast || []).slice(0, 12).map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      character: p.character,
+      profilePath: p.profile_path,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function getSimilar(type: string) {
+  try {
+    const data = await getTrending(type === "tv" ? "tv" : "movie", "week");
+    return data.results.slice(0, 20);
   } catch {
     return [];
   }
@@ -43,7 +60,7 @@ async function getSimilar(id: string, type: string) {
 
 export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
   const type = searchParams?.type || "movie";
-  const detail = await getDetail(params.id, type);
+  const detail = await getDetail(parseInt(params.id), type);
   if (!detail) return { title: "Film Tidak Ditemukan" };
   return {
     title: detail.title,
@@ -58,9 +75,14 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
 
 export default async function MovieDetailPage({ params, searchParams }: PageProps) {
   const type = searchParams?.type || "movie";
-  const [detail, similar] = await Promise.all([
-    getDetail(params.id, type),
-    getSimilar(params.id, type),
+  const numId = parseInt(params.id);
+
+  if (isNaN(numId)) notFound();
+
+  const [detail, cast, similar] = await Promise.all([
+    getDetail(numId, type),
+    getCast(numId, type),
+    getSimilar(type),
   ]);
 
   if (!detail) notFound();
@@ -80,6 +102,8 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
   const runtime = detail.runtime
     ? `${Math.floor(detail.runtime / 60)}j ${detail.runtime % 60}m`
     : null;
+
+  const similarFiltered = similar.filter((s: any) => s.id !== numId);
 
   return (
     <main className="bg-gray-950 min-h-screen">
@@ -103,7 +127,7 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
         {/* Back button */}
         <div className="absolute top-24 left-4 sm:left-6">
           <Link
-            href="javascript:history.back()"
+            href="/"
             className="flex items-center gap-2 bg-black/50 hover:bg-black/70 text-white px-4 py-2 rounded-full backdrop-blur-sm transition-colors text-sm"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -138,28 +162,21 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
 
           {/* Details */}
           <div className="flex-1 min-w-0">
-            {/* Type badge */}
-            <span
-              className={`inline-block text-xs font-bold px-3 py-1 rounded-full mb-3 ${
-                type === "tv" ? "bg-blue-600 text-white" : "bg-red-600 text-white"
-              }`}
-            >
+            <span className={`inline-block text-xs font-bold px-3 py-1 rounded-full mb-3 ${
+              type === "tv" ? "bg-blue-600 text-white" : "bg-red-600 text-white"
+            }`}>
               {type === "tv" ? "Serial TV" : "Film"}
             </span>
 
-            {/* Title */}
             <h1 className="text-white text-3xl sm:text-4xl font-bold leading-tight mb-2">
               {detail.title}
             </h1>
 
-            {/* Original title */}
             {detail.originalTitle && detail.originalTitle !== detail.title && (
-              <p className="text-gray-500 text-sm mb-4">
-                Judul Asli: {detail.originalTitle}
-              </p>
+              <p className="text-gray-500 text-sm mb-4">Judul Asli: {detail.originalTitle}</p>
             )}
 
-            {/* Meta badges */}
+            {/* Meta */}
             <div className="flex flex-wrap gap-3 mb-5">
               {detail.voteAverage > 0 && (
                 <div className="flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/30 px-3 py-1.5 rounded-full">
@@ -168,9 +185,7 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
                     {detail.voteAverage.toFixed(1)}
                   </span>
                   {detail.voteCount > 0 && (
-                    <span className="text-yellow-600 text-xs">
-                      ({detail.voteCount.toLocaleString()})
-                    </span>
+                    <span className="text-yellow-600 text-xs">({detail.voteCount.toLocaleString()})</span>
                   )}
                 </div>
               )}
@@ -235,10 +250,15 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
                   Tonton
                 </button>
               )}
-              <button className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white font-semibold px-5 py-3 rounded-xl transition-colors">
-                <Bookmark className="w-5 h-5" />
-                Watchlist
-              </button>
+
+              {/* Watchlist button — client component */}
+              <WatchlistButton
+                tmdbId={numId}
+                mediaType={type as "movie" | "tv"}
+                title={detail.title}
+                posterPath={detail.posterPath}
+              />
+
               <Link
                 href="/watch-party"
                 className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white font-semibold px-5 py-3 rounded-xl transition-colors"
@@ -248,7 +268,7 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
               </Link>
             </div>
 
-            {/* Extra info for TV shows */}
+            {/* TV extras */}
             {type === "tv" && (detail.seasons || detail.episodes) && (
               <div className="mt-5 flex gap-4">
                 {detail.seasons && (
@@ -269,11 +289,11 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
         </div>
 
         {/* Cast */}
-        {detail.cast && detail.cast.length > 0 && (
+        {cast && cast.length > 0 && (
           <section className="mt-12">
             <h2 className="text-white text-xl font-bold mb-4">Pemeran Utama</h2>
             <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: "none" }}>
-              {detail.cast.slice(0, 12).map((person: any) => (
+              {cast.map((person: any) => (
                 <div key={person.id} className="flex-none w-24 text-center">
                   <div className="w-20 h-20 mx-auto rounded-full overflow-hidden bg-gray-800 mb-2">
                     {person.profilePath ? (
@@ -299,11 +319,11 @@ export default async function MovieDetailPage({ params, searchParams }: PageProp
         )}
 
         {/* Similar */}
-        {similar.length > 0 && (
+        {similarFiltered.length > 0 && (
           <section className="mt-12">
             <MediaRow
               title={`${type === "tv" ? "Serial" : "Film"} Serupa`}
-              items={similar}
+              items={similarFiltered}
               viewAllHref={`/browse?type=${type}`}
             />
           </section>

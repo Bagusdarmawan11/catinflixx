@@ -14,7 +14,6 @@ interface MediaCardProps {
   voteAverage: number;
   overview?: string;
   inWatchlist?: boolean;
-  onWatchlistToggle?: (id: number, type: string, inList: boolean) => void;
 }
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
@@ -28,7 +27,6 @@ export default function MediaCard({
   voteAverage,
   overview,
   inWatchlist = false,
-  onWatchlistToggle,
 }: MediaCardProps) {
   const [hovered, setHovered] = useState(false);
   const [watchlisted, setWatchlisted] = useState(inWatchlist);
@@ -36,15 +34,17 @@ export default function MediaCard({
 
   const year = releaseDate ? new Date(releaseDate).getFullYear() : "—";
   const rating = voteAverage ? voteAverage.toFixed(1) : "N/A";
-  const posterUrl = posterPath
-    ? `${TMDB_IMAGE_BASE}/w342${posterPath}`
-    : null;
+  const posterUrl = posterPath ? `${TMDB_IMAGE_BASE}/w342${posterPath}` : null;
 
   async function handleWatchlist(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     if (loadingWl) return;
     setLoadingWl(true);
+
+    const optimistic = !watchlisted;
+    setWatchlisted(optimistic);
+
     try {
       const method = watchlisted ? "DELETE" : "POST";
       const res = await fetch("/api/watchlist", {
@@ -52,13 +52,17 @@ export default function MediaCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tmdbId: id, mediaType, title, posterPath }),
       });
-      if (res.ok) {
-        setWatchlisted(!watchlisted);
-        onWatchlistToggle?.(id, mediaType, !watchlisted);
-      } else if (res.status === 401) {
+      if (res.status === 401) {
+        setWatchlisted(!optimistic); // revert
         window.location.href = "/login";
+        return;
       }
-    } catch {}
+      if (!res.ok) {
+        setWatchlisted(!optimistic); // revert on error
+      }
+    } catch {
+      setWatchlisted(!optimistic);
+    }
     setLoadingWl(false);
   }
 
@@ -100,23 +104,22 @@ export default function MediaCard({
         <div className="absolute top-2 left-2">
           <span
             className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-              mediaType === "tv"
-                ? "bg-blue-600/80 text-white"
-                : "bg-red-600/80 text-white"
+              mediaType === "tv" ? "bg-blue-600/80 text-white" : "bg-red-600/80 text-white"
             }`}
           >
             {mediaType === "tv" ? "Serial" : "Film"}
           </span>
         </div>
 
-        {/* Watchlist button */}
+        {/* Watchlist button — always show if watchlisted, else show on hover */}
         <button
           onClick={handleWatchlist}
+          disabled={loadingWl}
           className={`absolute top-2 right-2 p-1.5 rounded-full transition-all duration-200 ${
             watchlisted
-              ? "bg-red-600 text-white"
+              ? "bg-red-600 text-white opacity-100"
               : "bg-black/50 text-white opacity-0 group-hover:opacity-100"
-          }`}
+          } disabled:opacity-60`}
           title={watchlisted ? "Hapus dari Watchlist" : "Tambah ke Watchlist"}
         >
           {watchlisted ? (
@@ -126,15 +129,15 @@ export default function MediaCard({
           )}
         </button>
 
-        {/* Rating */}
-        <div className="absolute top-2 right-2 group-hover:opacity-0 transition-opacity">
-          {voteAverage > 0 && (
+        {/* Rating badge — hide on hover */}
+        {voteAverage > 0 && (
+          <div className={`absolute top-2 right-2 transition-opacity duration-200 ${hovered ? "opacity-0" : "opacity-100"} ${watchlisted ? "hidden" : ""}`}>
             <div className="flex items-center gap-1 bg-black/60 px-2 py-0.5 rounded-full">
               <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
               <span className="text-white text-xs font-medium">{rating}</span>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Hover overlay */}
         <div
