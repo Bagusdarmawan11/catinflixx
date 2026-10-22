@@ -136,6 +136,9 @@ export function useWatchParty({
   );
 
   return {
+    // Expose socket instance untuk dipakai useVideoCall
+    socket: socketRef.current,
+    socketRef,
     connected,
     members,
     messages,

@@ -10,7 +10,7 @@ const port = parseInt(process.env.PORT || "3000", 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-// In-memory room state (fast, no DB round-trips for real-time events)
+// In-memory room state
 interface RoomMember {
   userId: number;
   name: string;
@@ -30,6 +30,9 @@ interface RoomState {
     updatedAt: number;
   };
 }
+
+// In-memory video call participants per room: roomCode → Set<socketId>
+const vcParticipants = new Map<string, Map<string, { userId: number; userName: string }>>();
 
 const rooms = new Map<string, RoomState>();
 
@@ -57,7 +60,6 @@ app.prepare().then(() => {
       (data: { roomCode: string; userId: number; name: string; isHost: boolean; videoUrl: string; videoTitle: string }) => {
         const { roomCode, userId, name, isHost, videoUrl, videoTitle } = data;
 
-        // Init room if not exists
         if (!rooms.has(roomCode)) {
           rooms.set(roomCode, {
             code: roomCode,
@@ -70,23 +72,16 @@ app.prepare().then(() => {
         }
 
         const room = rooms.get(roomCode)!;
-
-        // Add member
         room.members.set(socket.id, { userId, name, socketId: socket.id, isHost });
-
         socket.join(roomCode);
 
-        // Send current video state to new member
         socket.emit("video-state-sync", room.videoState);
-
-        // Send current video info
         socket.emit("room-info", {
           videoUrl: room.videoUrl,
           videoTitle: room.videoTitle,
           hostUserId: room.hostUserId,
         });
 
-        // Broadcast updated member list
         const memberList = Array.from(room.members.values()).map((m) => ({
           userId: m.userId,
           name: m.name,
@@ -94,7 +89,6 @@ app.prepare().then(() => {
         }));
         io.to(roomCode).emit("room-members", memberList);
 
-        // Notify others
         socket.to(roomCode).emit("chat-message", {
           id: Date.now(),
           userId: 0,
@@ -108,23 +102,20 @@ app.prepare().then(() => {
       }
     );
 
-    // ── Video State (host only broadcasts) ────────────────────────
+    // ── Video State ────────────────────────────────────────────────
     socket.on(
       "video-control",
       (data: { roomCode: string; isPlaying: boolean; currentTime: number }) => {
         const room = rooms.get(data.roomCode);
         if (!room) return;
-
         const member = room.members.get(socket.id);
-        if (!member?.isHost) return; // only host can control
+        if (!member?.isHost) return;
 
         room.videoState = {
           isPlaying: data.isPlaying,
           currentTime: data.currentTime,
           updatedAt: Date.now(),
         };
-
-        // Broadcast to everyone else in room
         socket.to(data.roomCode).emit("video-state-sync", room.videoState);
       }
     );
@@ -144,18 +135,16 @@ app.prepare().then(() => {
           isSystem: false,
           timestamp: new Date().toISOString(),
         };
-
         io.to(roomCode).emit("chat-message", payload);
       }
     );
 
-    // ── Change Video (host only) ───────────────────────────────────
+    // ── Change Video ───────────────────────────────────────────────
     socket.on(
       "change-video",
       (data: { roomCode: string; videoUrl: string; videoTitle: string }) => {
         const room = rooms.get(data.roomCode);
         if (!room) return;
-
         const member = room.members.get(socket.id);
         if (!member?.isHost) return;
 
@@ -172,8 +161,99 @@ app.prepare().then(() => {
       }
     );
 
+    // ════════════════════════════════════════════════════════════════
+    // ── WebRTC Video Call Signaling ─────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
+
+    // User join video call
+    socket.on(
+      "vc:join",
+      (data: { roomCode: string; userId: number; userName: string }) => {
+        const { roomCode, userId, userName } = data;
+
+        if (!vcParticipants.has(roomCode)) {
+          vcParticipants.set(roomCode, new Map());
+        }
+        const vcRoom = vcParticipants.get(roomCode)!;
+
+        // Beritahu semua peserta vc yang sudah ada bahwa ada user baru
+        vcRoom.forEach((_participant, existingSocketId) => {
+          io.to(existingSocketId).emit("vc:user-joined", {
+            socketId: socket.id,
+            userId,
+            userName,
+          });
+        });
+
+        // Tambahkan diri sendiri ke daftar peserta vc
+        vcRoom.set(socket.id, { userId, userName });
+
+        console.log(`[VideoCall] ${userName} joined vc in room ${roomCode}`);
+      }
+    );
+
+    // Relay WebRTC offer
+    socket.on(
+      "vc:offer",
+      (data: { roomCode: string; targetSocketId: string; offer: RTCSessionDescriptionInit }) => {
+        const room = rooms.get(data.roomCode);
+        if (!room) return;
+
+        const sender = room.members.get(socket.id);
+        io.to(data.targetSocketId).emit("vc:offer", {
+          fromSocketId: socket.id,
+          fromUserId: sender?.userId ?? 0,
+          fromUserName: sender?.name ?? "Tamu",
+          offer: data.offer,
+        });
+      }
+    );
+
+    // Relay WebRTC answer
+    socket.on(
+      "vc:answer",
+      (data: { roomCode: string; targetSocketId: string; answer: RTCSessionDescriptionInit }) => {
+        io.to(data.targetSocketId).emit("vc:answer", {
+          fromSocketId: socket.id,
+          answer: data.answer,
+        });
+      }
+    );
+
+    // Relay ICE candidate
+    socket.on(
+      "vc:ice-candidate",
+      (data: { roomCode: string; targetSocketId: string; candidate: RTCIceCandidateInit }) => {
+        io.to(data.targetSocketId).emit("vc:ice-candidate", {
+          fromSocketId: socket.id,
+          candidate: data.candidate,
+        });
+      }
+    );
+
+    // User leave video call (tanpa leave room)
+    socket.on("vc:leave", (data: { roomCode: string; userId: number }) => {
+      const vcRoom = vcParticipants.get(data.roomCode);
+      if (vcRoom) {
+        vcRoom.delete(socket.id);
+        if (vcRoom.size === 0) vcParticipants.delete(data.roomCode);
+      }
+      socket.to(data.roomCode).emit("vc:user-left", { socketId: socket.id });
+      console.log(`[VideoCall] User left vc in room ${data.roomCode}`);
+    });
+
     // ── Disconnect ─────────────────────────────────────────────────
     socket.on("disconnect", () => {
+      // Cleanup video call
+      vcParticipants.forEach((vcRoom, roomCode) => {
+        if (vcRoom.has(socket.id)) {
+          vcRoom.delete(socket.id);
+          socket.to(roomCode).emit("vc:user-left", { socketId: socket.id });
+          if (vcRoom.size === 0) vcParticipants.delete(roomCode);
+        }
+      });
+
+      // Cleanup watch party room
       rooms.forEach((room, roomCode) => {
         const member = room.members.get(socket.id);
         if (!member) return;
@@ -186,7 +266,6 @@ app.prepare().then(() => {
           return;
         }
 
-        // Broadcast updated member list
         const memberList = Array.from(room.members.values()).map((m) => ({
           userId: m.userId,
           name: m.name,

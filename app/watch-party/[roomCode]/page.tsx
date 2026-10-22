@@ -5,7 +5,9 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { Share2, X, Check, ChevronDown, ChevronUp, MessageSquare, MessageSquareOff } from "lucide-react";
 import VideoPlayer from "@/components/watch-party/VideoPlayer";
 import Chat from "@/components/watch-party/Chat";
+import VideoCall from "@/components/watch-party/VideoCall";
 import { useWatchParty } from "@/hooks/useWatchParty";
+import { useVideoCall } from "@/hooks/useVideoCall";
 
 interface UserInfo {
   id: number;
@@ -26,7 +28,7 @@ function RoomPageInner() {
   const [authLoading, setAuthLoading] = useState(true);
   const [roomValid, setRoomValid] = useState<boolean | null>(null);
 
-  // Chat visibility toggle (desktop + mobile)
+  // Chat visibility toggle
   const [chatVisible, setChatVisible] = useState(true);
 
   // Change video (host)
@@ -71,6 +73,7 @@ function RoomPageInner() {
   }, [roomCode, user]);
 
   const {
+    socket,
     connected,
     members,
     messages,
@@ -86,6 +89,24 @@ function RoomPageInner() {
     isHost: isHostParam,
     videoUrl: initialVideoUrl,
     videoTitle: initialVideoTitle,
+  });
+
+  // Video Call (WebRTC)
+  const {
+    callActive,
+    localStream,
+    peers,
+    camOn,
+    micOn,
+    startCall,
+    stopCall,
+    toggleCam,
+    toggleMic,
+  } = useVideoCall({
+    socket,
+    roomCode,
+    userId: user?.id ?? 0,
+    userName: user?.name ?? "Tamu",
   });
 
   const handleControlVideo = useCallback(
@@ -143,7 +164,6 @@ function RoomPageInner() {
   }
 
   return (
-    // pt-16 supaya tidak tertutup navbar fixed
     <div className="h-screen bg-gray-950 flex flex-col overflow-hidden pt-16">
       {/* Top Bar */}
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-gray-900 border-b border-white/10 shrink-0">
@@ -165,7 +185,7 @@ function RoomPageInner() {
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* Room code — tombol copy */}
+          {/* Room code */}
           <button
             onClick={copyCode}
             className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-lg px-2 sm:px-3 py-1.5 transition-colors"
@@ -245,9 +265,22 @@ function RoomPageInner() {
           />
         </div>
 
-        {/* Chat — desktop (side panel, toggle hide/show) */}
+        {/* Chat + VideoCall — desktop (side panel) */}
         {chatVisible && (
           <div className="w-72 lg:w-80 shrink-0 hidden sm:flex sm:flex-col border-l border-white/10">
+            {/* Video Call panel di atas chat */}
+            <VideoCall
+              callActive={callActive}
+              localStream={localStream}
+              peers={peers}
+              camOn={camOn}
+              micOn={micOn}
+              userName={user?.name ?? "Tamu"}
+              onStart={startCall}
+              onStop={stopCall}
+              onToggleCam={toggleCam}
+              onToggleMic={toggleMic}
+            />
             <Chat
               messages={messages}
               members={members}
@@ -258,9 +291,22 @@ function RoomPageInner() {
         )}
       </div>
 
-      {/* Chat — mobile (bottom drawer, toggle hide/show) */}
+      {/* Chat + VideoCall — mobile (bottom) */}
       {chatVisible && (
-        <div className="sm:hidden border-t border-white/10 bg-gray-900 shrink-0" style={{ maxHeight: "40vh" }}>
+        <div className="sm:hidden border-t border-white/10 bg-gray-900 shrink-0" style={{ maxHeight: "45vh" }}>
+          {/* Video Call di atas chat mobile */}
+          <VideoCall
+            callActive={callActive}
+            localStream={localStream}
+            peers={peers}
+            camOn={camOn}
+            micOn={micOn}
+            userName={user?.name ?? "Tamu"}
+            onStart={startCall}
+            onStop={stopCall}
+            onToggleCam={toggleCam}
+            onToggleMic={toggleMic}
+          />
           <Chat
             messages={messages}
             members={members}
@@ -273,7 +319,6 @@ function RoomPageInner() {
   );
 }
 
-// Suspense wrapper karena useSearchParams()
 export default function RoomPage() {
   return (
     <Suspense
