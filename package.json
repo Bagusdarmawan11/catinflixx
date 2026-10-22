@@ -26,6 +26,7 @@
     "drizzle-orm": "^0.45.4",
     "jose": "^5.9.6",
     "lucide-react": "^1.60.0",
+    "nanoid": "^6.0.2",
     "next": "14.2.29",
     "postcss": "^8",
     "react": "^18",
