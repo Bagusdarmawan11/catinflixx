@@ -5,7 +5,6 @@ import { nanoid } from "nanoid";
 
 export const runtime = "nodejs";
 
-// Shared global registry agar konsisten dengan [code]/route.ts
 declare global {
   // eslint-disable-next-line no-var
   var __roomRegistry: Map<string, {
@@ -25,11 +24,11 @@ const roomRegistry = global.__roomRegistry;
 
 function cleanupOldRooms() {
   const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
-  for (const [code, room] of roomRegistry.entries()) {
+  Array.from(roomRegistry.entries()).forEach(([code, room]) => {
     if (room.createdAt < sixHoursAgo) {
       roomRegistry.delete(code);
     }
-  }
+  });
 }
 
 // POST /api/rooms — buat room baru
