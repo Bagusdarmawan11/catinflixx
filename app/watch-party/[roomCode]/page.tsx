@@ -28,16 +28,14 @@ function RoomPageInner() {
   const [authLoading, setAuthLoading] = useState(true);
   const [roomValid, setRoomValid] = useState<boolean | null>(null);
 
-  // Chat visibility toggle
   const [chatVisible, setChatVisible] = useState(true);
-
-  // Change video (host)
   const [showChangeVideo, setShowChangeVideo] = useState(false);
   const [newUrl, setNewUrl] = useState("");
   const [newTitle, setNewTitle] = useState("");
-
-  // Copy code
   const [copied, setCopied] = useState(false);
+
+  // Track apakah video player sedang fullscreen
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Auth check
   useEffect(() => {
@@ -72,8 +70,21 @@ function RoomPageInner() {
     validateRoom();
   }, [roomCode, user]);
 
+  // Detect fullscreen change (native browser fullscreen API)
+  useEffect(() => {
+    function onFsChange() {
+      setIsFullscreen(!!document.fullscreenElement);
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+    };
+  }, []);
+
   const {
-    socket,
+    socketRef,
     connected,
     members,
     messages,
@@ -91,7 +102,7 @@ function RoomPageInner() {
     videoTitle: initialVideoTitle,
   });
 
-  // Video Call (WebRTC)
+  // ★ Pass socketRef (bukan socket value) agar useVideoCall selalu dapat instance terbaru
   const {
     callActive,
     localStream,
@@ -103,7 +114,7 @@ function RoomPageInner() {
     toggleCam,
     toggleMic,
   } = useVideoCall({
-    socket,
+    socketRef,
     roomCode,
     userId: user?.id ?? 0,
     userName: user?.name ?? "Tamu",
@@ -150,7 +161,9 @@ function RoomPageInner() {
           <div className="text-5xl mb-4">🚫</div>
           <h2 className="text-xl font-bold text-white mb-2">Room Tidak Ditemukan</h2>
           <p className="text-gray-400 mb-6">
-            Room dengan kode <span className="font-mono text-purple-400">{roomCode}</span> tidak ada atau sudah berakhir.
+            Room dengan kode{" "}
+            <span className="font-mono text-purple-400">{roomCode}</span> tidak ada
+            atau sudah berakhir.
           </p>
           <button
             onClick={() => router.push("/watch-party")}
@@ -163,8 +176,24 @@ function RoomPageInner() {
     );
   }
 
+  // Props VideoCall yang sama untuk desktop dan mobile
+  const videoCallProps = {
+    callActive,
+    localStream,
+    peers,
+    camOn,
+    micOn,
+    userName: user?.name ?? "Tamu",
+    isFullscreen,
+    onStart: startCall,
+    onStop: stopCall,
+    onToggleCam: toggleCam,
+    onToggleMic: toggleMic,
+  };
+
   return (
-    <div className="h-screen bg-gray-950 flex flex-col overflow-hidden pt-16">
+    // pt-0 karena navbar sudah di-hide via Navbar.tsx (pathname check)
+    <div className="h-screen bg-gray-950 flex flex-col overflow-hidden">
       {/* Top Bar */}
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-gray-900 border-b border-white/10 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
@@ -208,7 +237,11 @@ function RoomPageInner() {
               className="hidden sm:flex items-center gap-1 text-xs text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg px-3 py-1.5 transition-colors"
             >
               Ganti Video
-              {showChangeVideo ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              {showChangeVideo ? (
+                <ChevronUp className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5" />
+              )}
             </button>
           )}
 
@@ -218,7 +251,11 @@ function RoomPageInner() {
             className="text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg p-1.5 transition-colors"
             title={chatVisible ? "Sembunyikan chat" : "Tampilkan chat"}
           >
-            {chatVisible ? <MessageSquareOff className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
+            {chatVisible ? (
+              <MessageSquareOff className="w-4 h-4" />
+            ) : (
+              <MessageSquare className="w-4 h-4" />
+            )}
           </button>
         </div>
       </div>
@@ -265,22 +302,10 @@ function RoomPageInner() {
           />
         </div>
 
-        {/* Chat + VideoCall — desktop (side panel) */}
+        {/* Desktop: Chat + VideoCall panel */}
         {chatVisible && (
           <div className="w-72 lg:w-80 shrink-0 hidden sm:flex sm:flex-col border-l border-white/10">
-            {/* Video Call panel di atas chat */}
-            <VideoCall
-              callActive={callActive}
-              localStream={localStream}
-              peers={peers}
-              camOn={camOn}
-              micOn={micOn}
-              userName={user?.name ?? "Tamu"}
-              onStart={startCall}
-              onStop={stopCall}
-              onToggleCam={toggleCam}
-              onToggleMic={toggleMic}
-            />
+            <VideoCall {...videoCallProps} />
             <Chat
               messages={messages}
               members={members}
@@ -291,22 +316,13 @@ function RoomPageInner() {
         )}
       </div>
 
-      {/* Chat + VideoCall — mobile (bottom) */}
+      {/* Mobile: Chat + VideoCall (bottom) */}
       {chatVisible && (
-        <div className="sm:hidden border-t border-white/10 bg-gray-900 shrink-0" style={{ maxHeight: "45vh" }}>
-          {/* Video Call di atas chat mobile */}
-          <VideoCall
-            callActive={callActive}
-            localStream={localStream}
-            peers={peers}
-            camOn={camOn}
-            micOn={micOn}
-            userName={user?.name ?? "Tamu"}
-            onStart={startCall}
-            onStop={stopCall}
-            onToggleCam={toggleCam}
-            onToggleMic={toggleMic}
-          />
+        <div
+          className="sm:hidden border-t border-white/10 bg-gray-900 shrink-0 flex flex-col"
+          style={{ maxHeight: "45vh" }}
+        >
+          <VideoCall {...videoCallProps} />
           <Chat
             messages={messages}
             members={members}
@@ -315,6 +331,8 @@ function RoomPageInner() {
           />
         </div>
       )}
+
+      {/* Floating PiP saat fullscreen + call aktif — di-render VideoCall sendiri */}
     </div>
   );
 }

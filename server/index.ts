@@ -10,7 +10,7 @@ const port = parseInt(process.env.PORT || "3000", 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-// In-memory room state
+// ── Types ─────────────────────────────────────────────────────────────────────
 interface RoomMember {
   userId: number;
   name: string;
@@ -31,11 +31,41 @@ interface RoomState {
   };
 }
 
-// In-memory video call participants per room: roomCode → Set<socketId>
-const vcParticipants = new Map<string, Map<string, { userId: number; userName: string }>>();
-
+// ── In-memory stores ──────────────────────────────────────────────────────────
 const rooms = new Map<string, RoomState>();
 
+// Video call participants: roomCode → Map<socketId, { userId, userName }>
+const vcParticipants = new Map<
+  string,
+  Map<string, { userId: number; userName: string }>
+>();
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+function broadcastMembers(
+  io: SocketIOServer,
+  roomCode: string,
+  room: RoomState
+) {
+  const memberList = Array.from(room.members.values()).map((m) => ({
+    userId: m.userId,
+    name: m.name,
+    isHost: m.isHost,
+  }));
+  io.to(roomCode).emit("room-members", memberList);
+}
+
+function systemMsg(io: SocketIOServer, roomCode: string, message: string) {
+  io.to(roomCode).emit("chat-message", {
+    id: Date.now() + Math.random(),
+    userId: 0,
+    name: "Sistem",
+    message,
+    isSystem: true,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 app.prepare().then(() => {
   const httpServer = createServer((req, res) => {
     const parsedUrl = parse(req.url!, true);
@@ -52,14 +82,24 @@ app.prepare().then(() => {
   });
 
   io.on("connection", (socket) => {
-    console.log(`[Socket] Connected: ${socket.id}`);
+    const clientUserId = parseInt(socket.handshake.query.userId as string) || 0;
+    console.log(`[Socket] Connected: ${socket.id} (userId=${clientUserId})`);
 
-    // ── Join Room ──────────────────────────────────────────────────
+    // ── Join Room ────────────────────────────────────────────────────────────
     socket.on(
       "join-room",
-      (data: { roomCode: string; userId: number; name: string; isHost: boolean; videoUrl: string; videoTitle: string }) => {
-        const { roomCode, userId, name, isHost, videoUrl, videoTitle } = data;
+      (data: {
+        roomCode: string;
+        userId: number;
+        name: string;
+        isHost: boolean;
+        videoUrl: string;
+        videoTitle: string;
+        isReconnect?: boolean;
+      }) => {
+        const { roomCode, userId, name, isHost, videoUrl, videoTitle, isReconnect } = data;
 
+        // Buat room jika belum ada
         if (!rooms.has(roomCode)) {
           rooms.set(roomCode, {
             code: roomCode,
@@ -72,9 +112,27 @@ app.prepare().then(() => {
         }
 
         const room = rooms.get(roomCode)!;
-        room.members.set(socket.id, { userId, name, socketId: socket.id, isHost });
+
+        // Cek apakah userId ini sudah ada di room (reconnect dari device lain / refresh)
+        let wasAlreadyInRoom = false;
+        room.members.forEach((m) => {
+          if (m.userId === userId) {
+            wasAlreadyInRoom = true;
+            // Hapus entri socket lama
+            room.members.delete(m.socketId);
+          }
+        });
+
+        // Daftarkan socket baru
+        room.members.set(socket.id, {
+          userId,
+          name,
+          socketId: socket.id,
+          isHost,
+        });
         socket.join(roomCode);
 
+        // Kirim state ke user yang baru join
         socket.emit("video-state-sync", room.videoState);
         socket.emit("room-info", {
           videoUrl: room.videoUrl,
@@ -82,27 +140,25 @@ app.prepare().then(() => {
           hostUserId: room.hostUserId,
         });
 
-        const memberList = Array.from(room.members.values()).map((m) => ({
-          userId: m.userId,
-          name: m.name,
-          isHost: m.isHost,
-        }));
-        io.to(roomCode).emit("room-members", memberList);
+        // Broadcast member list terbaru
+        broadcastMembers(io, roomCode, room);
 
-        socket.to(roomCode).emit("chat-message", {
-          id: Date.now(),
-          userId: 0,
-          name: "Sistem",
-          message: `${name} bergabung ke room`,
-          isSystem: true,
-          timestamp: new Date().toISOString(),
-        });
+        // Sistem message: "bergabung" atau "kembali"
+        if (wasAlreadyInRoom || isReconnect) {
+          // Tidak tampilkan pesan apapun untuk reconnect agar tidak spam
+          // (opsional: aktifkan baris di bawah kalau mau ada notif kembali)
+          // systemMsg(io, roomCode, `${name} kembali ke room`);
+        } else {
+          systemMsg(io, roomCode, `${name} bergabung ke room`);
+        }
 
-        console.log(`[Socket] ${name} joined room ${roomCode}`);
+        console.log(
+          `[Socket] ${name} ${wasAlreadyInRoom ? "re-joined" : "joined"} room ${roomCode}`
+        );
       }
     );
 
-    // ── Video State ────────────────────────────────────────────────
+    // ── Video Control ────────────────────────────────────────────────────────
     socket.on(
       "video-control",
       (data: { roomCode: string; isPlaying: boolean; currentTime: number }) => {
@@ -120,10 +176,15 @@ app.prepare().then(() => {
       }
     );
 
-    // ── Chat Message ───────────────────────────────────────────────
+    // ── Chat Message ─────────────────────────────────────────────────────────
     socket.on(
       "send-message",
-      (data: { roomCode: string; userId: number; name: string; message: string }) => {
+      (data: {
+        roomCode: string;
+        userId: number;
+        name: string;
+        message: string;
+      }) => {
         const { roomCode, userId, name, message } = data;
         if (!message?.trim()) return;
 
@@ -139,7 +200,7 @@ app.prepare().then(() => {
       }
     );
 
-    // ── Change Video ───────────────────────────────────────────────
+    // ── Change Video ─────────────────────────────────────────────────────────
     socket.on(
       "change-video",
       (data: { roomCode: string; videoUrl: string; videoTitle: string }) => {
@@ -161,11 +222,11 @@ app.prepare().then(() => {
       }
     );
 
-    // ════════════════════════════════════════════════════════════════
-    // ── WebRTC Video Call Signaling ─────────────────────────────────
-    // ════════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════════════
+    // ── WebRTC Signaling ────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
 
-    // User join video call
+    // User join video call dalam room
     socket.on(
       "vc:join",
       (data: { roomCode: string; userId: number; userName: string }) => {
@@ -176,8 +237,8 @@ app.prepare().then(() => {
         }
         const vcRoom = vcParticipants.get(roomCode)!;
 
-        // Beritahu semua peserta vc yang sudah ada bahwa ada user baru
-        vcRoom.forEach((_participant, existingSocketId) => {
+        // Beritahu semua peserta vc yang sudah ada bahwa ada user baru → mereka yang inisiasi offer
+        vcRoom.forEach((_p, existingSocketId) => {
           io.to(existingSocketId).emit("vc:user-joined", {
             socketId: socket.id,
             userId,
@@ -185,21 +246,23 @@ app.prepare().then(() => {
           });
         });
 
-        // Tambahkan diri sendiri ke daftar peserta vc
+        // Daftarkan diri
         vcRoom.set(socket.id, { userId, userName });
-
-        console.log(`[VideoCall] ${userName} joined vc in room ${roomCode}`);
+        console.log(`[VC] ${userName} joined vc in room ${roomCode} (${vcRoom.size} total)`);
       }
     );
 
-    // Relay WebRTC offer
+    // Relay WebRTC offer (caller → callee)
     socket.on(
       "vc:offer",
-      (data: { roomCode: string; targetSocketId: string; offer: RTCSessionDescriptionInit }) => {
+      (data: {
+        roomCode: string;
+        targetSocketId: string;
+        offer: RTCSessionDescriptionInit;
+      }) => {
         const room = rooms.get(data.roomCode);
-        if (!room) return;
+        const sender = room?.members.get(socket.id);
 
-        const sender = room.members.get(socket.id);
         io.to(data.targetSocketId).emit("vc:offer", {
           fromSocketId: socket.id,
           fromUserId: sender?.userId ?? 0,
@@ -209,10 +272,14 @@ app.prepare().then(() => {
       }
     );
 
-    // Relay WebRTC answer
+    // Relay WebRTC answer (callee → caller)
     socket.on(
       "vc:answer",
-      (data: { roomCode: string; targetSocketId: string; answer: RTCSessionDescriptionInit }) => {
+      (data: {
+        roomCode: string;
+        targetSocketId: string;
+        answer: RTCSessionDescriptionInit;
+      }) => {
         io.to(data.targetSocketId).emit("vc:answer", {
           fromSocketId: socket.id,
           answer: data.answer,
@@ -220,10 +287,14 @@ app.prepare().then(() => {
       }
     );
 
-    // Relay ICE candidate
+    // Relay ICE candidate (keduanya arah)
     socket.on(
       "vc:ice-candidate",
-      (data: { roomCode: string; targetSocketId: string; candidate: RTCIceCandidateInit }) => {
+      (data: {
+        roomCode: string;
+        targetSocketId: string;
+        candidate: RTCIceCandidateInit;
+      }) => {
         io.to(data.targetSocketId).emit("vc:ice-candidate", {
           fromSocketId: socket.id,
           candidate: data.candidate,
@@ -231,7 +302,7 @@ app.prepare().then(() => {
       }
     );
 
-    // User leave video call (tanpa leave room)
+    // User keluar dari video call tapi tetap di room
     socket.on("vc:leave", (data: { roomCode: string; userId: number }) => {
       const vcRoom = vcParticipants.get(data.roomCode);
       if (vcRoom) {
@@ -239,10 +310,10 @@ app.prepare().then(() => {
         if (vcRoom.size === 0) vcParticipants.delete(data.roomCode);
       }
       socket.to(data.roomCode).emit("vc:user-left", { socketId: socket.id });
-      console.log(`[VideoCall] User left vc in room ${data.roomCode}`);
+      console.log(`[VC] User left vc in room ${data.roomCode}`);
     });
 
-    // ── Disconnect ─────────────────────────────────────────────────
+    // ── Disconnect ────────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
       // Cleanup video call
       vcParticipants.forEach((vcRoom, roomCode) => {
@@ -253,7 +324,7 @@ app.prepare().then(() => {
         }
       });
 
-      // Cleanup watch party room
+      // Cleanup watch party
       rooms.forEach((room, roomCode) => {
         const member = room.members.get(socket.id);
         if (!member) return;
@@ -261,26 +332,19 @@ app.prepare().then(() => {
         room.members.delete(socket.id);
 
         if (room.members.size === 0) {
-          rooms.delete(roomCode);
-          console.log(`[Socket] Room ${roomCode} deleted (empty)`);
+          // Delay delete room 30 detik untuk toleransi reconnect
+          setTimeout(() => {
+            if (rooms.get(roomCode)?.members.size === 0) {
+              rooms.delete(roomCode);
+              console.log(`[Socket] Room ${roomCode} deleted (empty)`);
+            }
+          }, 30_000);
           return;
         }
 
-        const memberList = Array.from(room.members.values()).map((m) => ({
-          userId: m.userId,
-          name: m.name,
-          isHost: m.isHost,
-        }));
-        io.to(roomCode).emit("room-members", memberList);
-
-        io.to(roomCode).emit("chat-message", {
-          id: Date.now(),
-          userId: 0,
-          name: "Sistem",
-          message: `${member.name} meninggalkan room`,
-          isSystem: true,
-          timestamp: new Date().toISOString(),
-        });
+        broadcastMembers(io, roomCode, room);
+        // Tidak tampilkan sistem pesan saat disconnect agar tidak spam saat refresh
+        // (reconnect akan join ulang dalam beberapa detik)
       });
 
       console.log(`[Socket] Disconnected: ${socket.id}`);
@@ -288,6 +352,8 @@ app.prepare().then(() => {
   });
 
   httpServer.listen(port, hostname, () => {
-    console.log(`> CatinFlix ready on http://${hostname}:${port} [${dev ? "dev" : "prod"}]`);
+    console.log(
+      `> CatinFlix ready on http://${hostname}:${port} [${dev ? "dev" : "prod"}]`
+    );
   });
 });

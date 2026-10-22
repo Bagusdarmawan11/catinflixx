@@ -41,6 +41,7 @@ export function useWatchParty({
   videoUrl,
   videoTitle,
 }: UseWatchPartyOptions) {
+  // socketRef sebagai MutableRefObject agar bisa dipakai useVideoCall secara langsung
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [members, setMembers] = useState<RoomMember[]>([]);
@@ -50,29 +51,58 @@ export function useWatchParty({
     currentTime: 0,
     updatedAt: Date.now(),
   });
-  const [currentVideo, setCurrentVideo] = useState({ url: videoUrl, title: videoTitle });
+  const [currentVideo, setCurrentVideo] = useState({
+    url: videoUrl,
+    title: videoTitle,
+  });
+
+  // Track apakah ini koneksi pertama atau reconnect
+  const isFirstConnect = useRef(true);
 
   useEffect(() => {
-    const socketUrl = process.env.NEXT_PUBLIC_BASE_URL || window.location.origin;
+    if (!userId) return; // Tunggu userId tersedia
+
+    const socketUrl =
+      process.env.NEXT_PUBLIC_BASE_URL || window.location.origin;
 
     const socket = io(socketUrl, {
       transports: ["websocket", "polling"],
       reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
+      reconnectionDelay: 2000,
+      // Kirim userId sebagai query agar server bisa identifikasi reconnect
+      query: { userId: String(userId) },
     });
 
     socketRef.current = socket;
 
     socket.on("connect", () => {
       setConnected(true);
-      socket.emit("join-room", {
-        roomCode,
-        userId,
-        name: userName,
-        isHost,
-        videoUrl,
-        videoTitle,
-      });
+
+      if (isFirstConnect.current) {
+        // Koneksi pertama — join normal
+        isFirstConnect.current = false;
+        socket.emit("join-room", {
+          roomCode,
+          userId,
+          name: userName,
+          isHost,
+          videoUrl,
+          videoTitle,
+          isReconnect: false,
+        });
+      } else {
+        // Reconnect (setelah refresh/putus) — pakai flag isReconnect
+        // Server akan tampilkan "kembali" bukan "bergabung"
+        socket.emit("join-room", {
+          roomCode,
+          userId,
+          name: userName,
+          isHost,
+          videoUrl,
+          videoTitle,
+          isReconnect: true,
+        });
+      }
     });
 
     socket.on("disconnect", () => setConnected(false));
@@ -82,22 +112,26 @@ export function useWatchParty({
     });
 
     socket.on("chat-message", (msg: ChatMessage) => {
-      setMessages((prev) => [...prev.slice(-99), msg]); // keep last 100
+      setMessages((prev) => [...prev.slice(-99), msg]);
     });
 
     socket.on("video-state-sync", (state: VideoState) => {
       setVideoState(state);
     });
 
-    socket.on("room-info", (info: { videoUrl: string; videoTitle: string }) => {
-      setCurrentVideo({ url: info.videoUrl, title: info.videoTitle });
-    });
+    socket.on(
+      "room-info",
+      (info: { videoUrl: string; videoTitle: string }) => {
+        setCurrentVideo({ url: info.videoUrl, title: info.videoTitle });
+      }
+    );
 
     return () => {
       socket.disconnect();
+      socketRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomCode, userId, userName, isHost]);
+  }, [roomCode, userId]);
 
   const sendMessage = useCallback(
     (message: string) => {
@@ -136,9 +170,7 @@ export function useWatchParty({
   );
 
   return {
-    // Expose socket instance untuk dipakai useVideoCall
-    socket: socketRef.current,
-    socketRef,
+    socketRef, // ← MutableRefObject<Socket | null>, reactive untuk useVideoCall
     connected,
     members,
     messages,

@@ -85,6 +85,11 @@ export default function Navbar() {
 
   // Liquid glass: saat scroll, pakai backdrop-blur + glass border
   // Saat di atas halaman (belum scroll), transparan dengan gradient bawah
+  // Sembunyikan navbar di halaman room watch-party (punya top bar sendiri)
+  if (pathname?.match(/^\/watch-party\/[^/]+/)) {
+    return null;
+  }
+
   const navBg = scrolled || menuOpen
     ? "bg-gray-950/60 backdrop-blur-xl border-b border-white/10 shadow-[0_4px_32px_rgba(0,0,0,0.4)]"
     : "bg-gradient-to-b from-black/70 to-transparent";
