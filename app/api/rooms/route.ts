@@ -31,6 +31,16 @@ function cleanupOldRooms() {
   });
 }
 
+// Generate kode 6 karakter hanya huruf kapital + angka (tanpa simbol)
+function generateRoomCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // hapus karakter ambigu I,O,0,1
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
 // POST /api/rooms — buat room baru
 export async function POST(req: NextRequest) {
   try {
@@ -54,7 +64,12 @@ export async function POST(req: NextRequest) {
 
     cleanupOldRooms();
 
-    const code = nanoid(6).toUpperCase();
+    // Pastikan kode unik
+    let code = generateRoomCode();
+    while (roomRegistry.has(code)) {
+      code = generateRoomCode();
+    }
+
     const room = {
       code,
       hostUserId: payload.userId,

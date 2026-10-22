@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Play, Pause, SkipBack, Volume2, VolumeX, Maximize, ExternalLink } from "lucide-react";
+import { Play, Pause, SkipBack, Volume2, VolumeX, ExternalLink } from "lucide-react";
 import type { VideoState } from "@/hooks/useWatchParty";
 
 interface Props {
@@ -24,7 +24,7 @@ function extractYouTubeId(url: string): string | null {
 }
 
 export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, onControl }: Props) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const playerDivRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const [apiReady, setApiReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -50,22 +50,23 @@ export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, 
     };
   }, []);
 
-  // Init / re-init player when videoId or API changes
+  // Init / re-init player
   useEffect(() => {
-    if (!apiReady || !videoId || !iframeRef.current) return;
+    if (!apiReady || !videoId || !playerDivRef.current) return;
     if (playerRef.current) {
       playerRef.current.destroy();
     }
 
-    playerRef.current = new (window as any).YT.Player(iframeRef.current, {
+    playerRef.current = new (window as any).YT.Player(playerDivRef.current, {
       videoId,
       playerVars: {
         autoplay: 0,
-        controls: isHost ? 1 : 0, // guests: no native controls
+        controls: 1,         // selalu tampilkan native controls agar mobile bisa fullscreen
         modestbranding: 1,
         rel: 0,
         disablekb: isHost ? 0 : 1,
-        fs: 1,
+        fs: 1,               // aktifkan fullscreen button
+        playsinline: 0,      // di iOS, biarkan buka fullscreen native
       },
       events: {
         onReady: (e: any) => {
@@ -85,10 +86,10 @@ export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, 
         },
       },
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiReady, videoId]);
 
-  // Sync from socket (non-host)
+  // Sync dari socket (non-host)
   useEffect(() => {
     if (!playerRef.current || isHost) return;
     syncLockRef.current = true;
@@ -97,7 +98,6 @@ export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, 
     const serverTime = videoState.currentTime + (Date.now() - videoState.updatedAt) / 1000;
     const clientTime = p.getCurrentTime?.() ?? 0;
 
-    // Seek if drift > 3 seconds
     if (Math.abs(serverTime - clientTime) > 3) {
       p.seekTo?.(serverTime, true);
     }
@@ -168,7 +168,12 @@ export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, 
     return (
       <div className="flex flex-col items-center justify-center h-full bg-gray-950 gap-4 text-gray-400">
         <p className="text-lg">URL video tidak valid</p>
-        <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-purple-400 hover:underline text-sm">
+        <a
+          href={videoUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 text-purple-400 hover:underline text-sm"
+        >
           <ExternalLink className="w-4 h-4" /> Buka di browser
         </a>
       </div>
@@ -177,24 +182,27 @@ export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, 
 
   return (
     <div className="flex flex-col h-full bg-black">
-      {/* Video */}
+      {/* Video iframe — full height, tanpa overlay yang menghalangi */}
       <div className="relative flex-1 bg-black min-h-0">
-        <div id="yt-player-container" className="w-full h-full">
-          {/* YT API replaces this div */}
-          <div ref={iframeRef as any} className="w-full h-full" />
+        <div className="w-full h-full">
+          {/* YT API mengganti div ini dengan iframe */}
+          <div ref={playerDivRef} className="w-full h-full" />
         </div>
-        {!isHost && (
-          <div className="absolute inset-0 bg-transparent" /> // prevent guest clicks on iframe
-        )}
+        {/* 
+          TIDAK ada overlay div untuk guest agar:
+          1. Tombol fullscreen YouTube bisa diklik di mobile
+          2. Guest tetap bisa mute/unmute via native controls
+          Kontrol play/pause guest diblok via disablekb + controls terbatas di playerVars
+        */}
       </div>
 
-      {/* Controls */}
-      <div className="bg-gray-950 border-t border-white/10 px-4 py-3 space-y-2 shrink-0">
-        <p className="text-sm font-medium text-white truncate">{videoTitle}</p>
+      {/* Custom Controls (tambahan di bawah player) */}
+      <div className="bg-gray-950 border-t border-white/10 px-3 sm:px-4 py-2 sm:py-3 space-y-1.5 shrink-0">
+        <p className="text-xs sm:text-sm font-medium text-white truncate">{videoTitle}</p>
 
-        {/* Progress */}
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-400 w-10 shrink-0">{formatTime(currentTime)}</span>
+        {/* Progress bar — hanya host yang bisa seek */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <span className="text-xs text-gray-400 w-9 shrink-0">{formatTime(currentTime)}</span>
           <input
             type="range"
             min={0}
@@ -204,23 +212,38 @@ export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, 
             disabled={!isHost}
             className="flex-1 h-1 accent-purple-500 disabled:opacity-40 cursor-pointer disabled:cursor-default"
           />
-          <span className="text-xs text-gray-400 w-10 shrink-0 text-right">{formatTime(duration)}</span>
+          <span className="text-xs text-gray-400 w-9 shrink-0 text-right">{formatTime(duration)}</span>
         </div>
 
         {/* Buttons */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           {isHost && (
             <>
-              <button onClick={restart} className="text-gray-400 hover:text-white transition-colors" title="Mulai ulang">
-                <SkipBack className="w-5 h-5" />
+              <button
+                onClick={restart}
+                className="text-gray-400 hover:text-white transition-colors"
+                title="Mulai ulang"
+              >
+                <SkipBack className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
-              <button onClick={togglePlay} className="bg-purple-600 hover:bg-purple-700 text-white rounded-full p-2 transition-colors">
-                {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+              <button
+                onClick={togglePlay}
+                className="bg-purple-600 hover:bg-purple-700 text-white rounded-full p-1.5 sm:p-2 transition-colors"
+              >
+                {isPlaying ? (
+                  <Pause className="w-4 h-4 sm:w-5 sm:h-5" />
+                ) : (
+                  <Play className="w-4 h-4 sm:w-5 sm:h-5" />
+                )}
               </button>
             </>
           )}
           <button onClick={toggleMute} className="text-gray-400 hover:text-white transition-colors">
-            {muted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+            {muted ? (
+              <VolumeX className="w-4 h-4 sm:w-5 sm:h-5" />
+            ) : (
+              <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
+            )}
           </button>
           <a
             href={videoUrl}
@@ -232,7 +255,9 @@ export default function VideoPlayer({ videoUrl, videoTitle, videoState, isHost, 
             <ExternalLink className="w-4 h-4" />
           </a>
           {!isHost && (
-            <span className="text-xs text-gray-500 italic">Hanya host yang bisa mengontrol video</span>
+            <span className="text-[10px] sm:text-xs text-gray-500 italic">
+              Hanya host yang bisa mengontrol video
+            </span>
           )}
         </div>
       </div>

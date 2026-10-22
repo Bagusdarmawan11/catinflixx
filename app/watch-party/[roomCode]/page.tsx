@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { Share2, X, Check, ChevronDown, ChevronUp } from "lucide-react";
+import { Share2, X, Check, ChevronDown, ChevronUp, MessageSquare, MessageSquareOff } from "lucide-react";
 import VideoPlayer from "@/components/watch-party/VideoPlayer";
 import Chat from "@/components/watch-party/Chat";
 import { useWatchParty } from "@/hooks/useWatchParty";
@@ -12,7 +12,7 @@ interface UserInfo {
   name: string;
 }
 
-export default function RoomPage() {
+function RoomPageInner() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -25,6 +25,9 @@ export default function RoomPage() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [roomValid, setRoomValid] = useState<boolean | null>(null);
+
+  // Chat visibility toggle (desktop + mobile)
+  const [chatVisible, setChatVisible] = useState(true);
 
   // Change video (host)
   const [showChangeVideo, setShowChangeVideo] = useState(false);
@@ -125,7 +128,9 @@ export default function RoomPage() {
         <div className="text-center max-w-sm px-4">
           <div className="text-5xl mb-4">🚫</div>
           <h2 className="text-xl font-bold text-white mb-2">Room Tidak Ditemukan</h2>
-          <p className="text-gray-400 mb-6">Room dengan kode <span className="font-mono text-purple-400">{roomCode}</span> tidak ada atau sudah berakhir.</p>
+          <p className="text-gray-400 mb-6">
+            Room dengan kode <span className="font-mono text-purple-400">{roomCode}</span> tidak ada atau sudah berakhir.
+          </p>
           <button
             onClick={() => router.push("/watch-party")}
             className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-xl font-semibold transition-colors"
@@ -138,47 +143,72 @@ export default function RoomPage() {
   }
 
   return (
-    <div className="h-screen bg-gray-950 flex flex-col overflow-hidden">
+    // pt-16 supaya tidak tertutup navbar fixed
+    <div className="h-screen bg-gray-950 flex flex-col overflow-hidden pt-16">
       {/* Top Bar */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-gray-900 border-b border-white/10 shrink-0">
-        <div className="flex items-center gap-3">
-          <button onClick={() => router.push("/watch-party")} className="text-gray-400 hover:text-white transition-colors">
+      <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-gray-900 border-b border-white/10 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <button
+            onClick={() => router.push("/watch-party")}
+            className="text-gray-400 hover:text-white transition-colors shrink-0"
+          >
             <X className="w-5 h-5" />
           </button>
-          <div>
-            <h1 className="text-sm font-semibold text-white line-clamp-1">{currentVideo.title}</h1>
+          <div className="min-w-0">
+            <h1 className="text-sm font-semibold text-white truncate max-w-[140px] sm:max-w-xs">
+              {currentVideo.title}
+            </h1>
             <p className="text-xs text-gray-500">
               {members.length} penonton · {isHostParam ? "Kamu Host" : "Tamu"}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Room code */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Room code — tombol copy */}
           <button
             onClick={copyCode}
-            className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-lg px-3 py-1.5 transition-colors"
+            className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-lg px-2 sm:px-3 py-1.5 transition-colors"
+            title="Klik untuk salin kode"
           >
-            <span className="font-mono text-sm font-bold text-purple-400 tracking-wider">{roomCode}</span>
-            {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5 text-gray-400" />}
+            <span className="font-mono text-xs sm:text-sm font-bold text-purple-400 tracking-wider">
+              {roomCode}
+            </span>
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-green-400" />
+            ) : (
+              <Share2 className="w-3.5 h-3.5 text-gray-400" />
+            )}
           </button>
 
           {/* Change video (host) */}
           {isHostParam && (
             <button
               onClick={() => setShowChangeVideo(!showChangeVideo)}
-              className="flex items-center gap-1 text-xs text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg px-3 py-1.5 transition-colors"
+              className="hidden sm:flex items-center gap-1 text-xs text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg px-3 py-1.5 transition-colors"
             >
               Ganti Video
               {showChangeVideo ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
           )}
+
+          {/* Toggle Chat */}
+          <button
+            onClick={() => setChatVisible(!chatVisible)}
+            className="text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg p-1.5 transition-colors"
+            title={chatVisible ? "Sembunyikan chat" : "Tampilkan chat"}
+          >
+            {chatVisible ? <MessageSquareOff className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
+          </button>
         </div>
       </div>
 
       {/* Change Video Panel */}
       {showChangeVideo && isHostParam && (
-        <form onSubmit={handleChangeVideo} className="flex gap-2 px-4 py-2 bg-gray-900/80 border-b border-white/10 shrink-0">
+        <form
+          onSubmit={handleChangeVideo}
+          className="flex gap-2 px-4 py-2 bg-gray-900/80 border-b border-white/10 shrink-0"
+        >
           <input
             type="url"
             value={newUrl}
@@ -191,7 +221,7 @@ export default function RoomPage() {
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             placeholder="Judul (opsional)"
-            className="w-40 bg-gray-800 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+            className="w-32 sm:w-40 bg-gray-800 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
           />
           <button
             type="submit"
@@ -204,8 +234,8 @@ export default function RoomPage() {
 
       {/* Main Layout */}
       <div className="flex flex-1 min-h-0">
-        {/* Video (left, 70%) */}
-        <div className="flex-1 min-w-0">
+        {/* Video */}
+        <div className="flex-1 min-w-0 min-h-0">
           <VideoPlayer
             videoUrl={currentVideo.url}
             videoTitle={currentVideo.title}
@@ -215,8 +245,22 @@ export default function RoomPage() {
           />
         </div>
 
-        {/* Chat (right, fixed 320px) */}
-        <div className="w-80 shrink-0 hidden lg:flex lg:flex-col">
+        {/* Chat — desktop (side panel, toggle hide/show) */}
+        {chatVisible && (
+          <div className="w-72 lg:w-80 shrink-0 hidden sm:flex sm:flex-col border-l border-white/10">
+            <Chat
+              messages={messages}
+              members={members}
+              onSend={sendMessage}
+              connected={connected}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Chat — mobile (bottom drawer, toggle hide/show) */}
+      {chatVisible && (
+        <div className="sm:hidden border-t border-white/10 bg-gray-900 shrink-0" style={{ maxHeight: "40vh" }}>
           <Chat
             messages={messages}
             members={members}
@@ -224,17 +268,22 @@ export default function RoomPage() {
             connected={connected}
           />
         </div>
-      </div>
-
-      {/* Mobile chat toggle (shown on small screens as bottom bar) */}
-      <div className="lg:hidden border-t border-white/10 bg-gray-900 px-4 py-2 shrink-0">
-        <Chat
-          messages={messages}
-          members={members}
-          onSend={sendMessage}
-          connected={connected}
-        />
-      </div>
+      )}
     </div>
+  );
+}
+
+// Suspense wrapper karena useSearchParams()
+export default function RoomPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+          <div className="w-10 h-10 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      }
+    >
+      <RoomPageInner />
+    </Suspense>
   );
 }
