@@ -73,11 +73,9 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
     });
   }
 
-  // Deteksi apakah pesan adalah stiker emoji tunggal
+  // Deteksi apakah pesan adalah stiker dari daftar STICKERS
   function isStickerMessage(msg: string): boolean {
-    // Cek apakah pesan hanya terdiri dari 1-2 emoji
-    const emojiRegex = /^(\p{Emoji_Presentation}|\p{Extended_Pictographic}){1,2}$/u;
-    return emojiRegex.test(msg.trim()) && STICKERS.includes(msg.trim());
+    return STICKERS.includes(msg.trim());
   }
 
   return (
