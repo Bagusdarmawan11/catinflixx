@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send } from "lucide-react";
+import { Send, Smile } from "lucide-react";
 import type { ChatMessage, RoomMember } from "@/hooks/useWatchParty";
 
 interface Props {
@@ -11,24 +11,30 @@ interface Props {
   connected: boolean;
 }
 
+// Stiker emoji yang bisa dikirim
+const STICKERS = [
+  "❤️", "😍", "🥰", "😘", "💕", "💖",
+  "😂", "🤣", "😭", "😩", "🥺", "🫶",
+  "🔥", "✨", "🎉", "👏", "💯", "🙈",
+  "😎", "🤩", "😋", "🤭", "😏", "🥳",
+];
+
 export default function Chat({ messages, members, onSend, connected }: Props) {
   const [input, setInput] = useState("");
-  // Ref ke scroll container (bukan ke elemen terakhir)
+  const [showStickers, setShowStickers] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
 
-  // Deteksi apakah user sedang scroll ke atas (baca pesan lama)
   function onScroll() {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const threshold = 60; // px dari bawah
+    const threshold = 60;
     isAtBottomRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
   }
 
-  // Scroll ke bawah dalam container saja — tidak pakai scrollIntoView
   useEffect(() => {
-    if (!isAtBottomRef.current) return; // jangan ganggu kalau user lagi scroll ke atas
+    if (!isAtBottomRef.current) return;
     const el = scrollContainerRef.current;
     if (el) {
       el.scrollTop = el.scrollHeight;
@@ -41,7 +47,18 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
     if (!msg || !connected) return;
     onSend(msg);
     setInput("");
-    // Paksa scroll ke bawah setelah kirim pesan sendiri
+    setShowStickers(false);
+    isAtBottomRef.current = true;
+    setTimeout(() => {
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 50);
+  }
+
+  function sendSticker(sticker: string) {
+    if (!connected) return;
+    onSend(sticker);
+    setShowStickers(false);
     isAtBottomRef.current = true;
     setTimeout(() => {
       const el = scrollContainerRef.current;
@@ -54,6 +71,13 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  // Deteksi apakah pesan adalah stiker emoji tunggal
+  function isStickerMessage(msg: string): boolean {
+    // Cek apakah pesan hanya terdiri dari 1-2 emoji
+    const emojiRegex = /^(\p{Emoji_Presentation}|\p{Extended_Pictographic}){1,2}$/u;
+    return emojiRegex.test(msg.trim()) && STICKERS.includes(msg.trim());
   }
 
   return (
@@ -79,85 +103,127 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
         </p>
         <div className="flex flex-wrap gap-1.5">
           {members.map((m) => (
-            <div
+            <span
               key={m.userId}
-              title={m.isHost ? `${m.name} (Host)` : m.name}
-              className="flex items-center gap-1 bg-gray-800 rounded-full px-2 py-0.5"
+              className="flex items-center gap-1 text-xs bg-gray-800 text-gray-300 rounded-full px-2 py-0.5"
             >
-              <div
+              <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  m.isHost ? "bg-yellow-400" : "bg-green-400"
+                  m.isHost ? "bg-purple-400" : "bg-green-400"
                 }`}
               />
-              <span className="text-xs text-gray-200 max-w-[80px] truncate">
-                {m.name}
-              </span>
-            </div>
+              {m.name}
+              {m.isHost && (
+                <span className="text-[9px] text-purple-400 ml-0.5">HOST</span>
+              )}
+            </span>
           ))}
         </div>
       </div>
 
-      {/* Messages — scroll hanya di sini, bukan di seluruh halaman */}
+      {/* Messages — scroll hanya di dalam container ini */}
       <div
         ref={scrollContainerRef}
         onScroll={onScroll}
-        className="flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-2 min-h-0"
+        className="flex-1 overflow-y-auto overscroll-contain px-3 py-2 space-y-1.5"
+        style={{ minHeight: 0 }}
       >
         {messages.length === 0 && (
-          <p className="text-xs text-gray-500 text-center mt-8">
+          <p className="text-xs text-gray-500 text-center py-4">
             Belum ada pesan. Mulai chat!
           </p>
         )}
         {messages.map((msg) => (
-          <div key={msg.id} className={msg.isSystem ? "text-center" : ""}>
+          <div
+            key={msg.id}
+            className={`${msg.isSystem ? "text-center" : ""}`}
+          >
             {msg.isSystem ? (
-              <span className="text-xs text-gray-500 italic">{msg.message}</span>
+              <span className="text-[11px] text-gray-500 italic">
+                {msg.message}
+              </span>
+            ) : isStickerMessage(msg.message) ? (
+              /* Render stiker besar */
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-purple-400 font-medium">
+                  {msg.name}
+                </span>
+                <span className="text-3xl leading-tight">{msg.message}</span>
+                <span className="text-[10px] text-gray-600">
+                  {formatTime(msg.timestamp)}
+                </span>
+              </div>
             ) : (
-              <div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs font-semibold text-purple-400 truncate max-w-[100px]">
+              <div className="flex flex-col gap-0.5">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-[11px] text-purple-400 font-medium shrink-0">
                     {msg.name}
                   </span>
-                  <span className="text-[10px] text-gray-600 shrink-0">
-                    {formatTime(msg.timestamp)}
+                  <span className="text-xs text-white break-words min-w-0">
+                    {msg.message}
                   </span>
                 </div>
-                <p className="text-sm text-gray-200 break-words mt-0.5">
-                  {msg.message}
-                </p>
+                <span className="text-[10px] text-gray-600">
+                  {formatTime(msg.timestamp)}
+                </span>
               </div>
             )}
           </div>
         ))}
       </div>
 
-      {/* Input */}
-      <form onSubmit={submit} className="p-3 border-t border-white/10 shrink-0">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={connected ? "Ketik pesan..." : "Menghubungkan..."}
-            disabled={!connected}
-            maxLength={300}
-            // onFocus: jangan auto-scroll halaman saat keyboard muncul di mobile
-            onFocus={() => {
-              setTimeout(() => {
-                const el = scrollContainerRef.current;
-                if (el) el.scrollTop = el.scrollHeight;
-              }, 300); // tunggu keyboard muncul
-            }}
-            className="flex-1 bg-gray-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
-          />
-          <button
-            type="submit"
-            disabled={!connected || !input.trim()}
-            className="bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white rounded-lg px-3 py-2 transition-colors"
-          >
-            <Send className="w-4 h-4" />
-          </button>
+      {/* Sticker panel */}
+      {showStickers && (
+        <div className="px-3 py-2 border-t border-white/10 bg-gray-800/80 shrink-0">
+          <div className="grid grid-cols-8 gap-1">
+            {STICKERS.map((s) => (
+              <button
+                key={s}
+                onClick={() => sendSticker(s)}
+                className="text-xl hover:bg-white/10 rounded-lg p-1 transition-colors"
+                title={s}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
+      )}
+
+      {/* Input */}
+      <form
+        onSubmit={submit}
+        className="flex items-center gap-2 px-3 py-2 border-t border-white/10 bg-gray-900 shrink-0"
+      >
+        {/* Tombol stiker */}
+        <button
+          type="button"
+          onClick={() => setShowStickers((v) => !v)}
+          className={`shrink-0 transition-colors ${
+            showStickers
+              ? "text-purple-400"
+              : "text-gray-500 hover:text-gray-300"
+          }`}
+          title="Stiker"
+        >
+          <Smile className="w-5 h-5" />
+        </button>
+
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={connected ? "Tulis pesan..." : "Menghubungkan..."}
+          disabled={!connected}
+          className="flex-1 bg-gray-800 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50 min-w-0"
+        />
+        <button
+          type="submit"
+          disabled={!connected || !input.trim()}
+          className="shrink-0 bg-purple-600 hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl p-2 transition-colors"
+        >
+          <Send className="w-4 h-4" />
+        </button>
       </form>
     </div>
   );

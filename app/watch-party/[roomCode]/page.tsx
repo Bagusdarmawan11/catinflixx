@@ -109,7 +109,9 @@ function RoomPageInner() {
       setTimeout(() => router.push("/watch-party"), 4000);
     };
     socket.on("room-ended", handler);
-    return () => { socket.off("room-ended", handler); };
+    return () => {
+      socket.off("room-ended", handler);
+    };
   }, [socketRef, router]);
 
   const {
@@ -136,7 +138,6 @@ function RoomPageInner() {
     [controlVideo]
   );
 
-  // Callback dari VideoPlayer saat fullscreen berubah
   const handleFullscreenChange = useCallback((fs: boolean) => {
     setIsFullscreen(fs);
   }, []);
@@ -159,7 +160,6 @@ function RoomPageInner() {
 
   function handleExitRoom() {
     if (isHostParam) {
-      // Host sengaja keluar → kirim end-room ke server
       socketRef.current?.emit("end-room", { roomCode, userId: user?.id });
     }
     router.push("/watch-party");
@@ -213,7 +213,6 @@ function RoomPageInner() {
   };
 
   return (
-    // overflow-hidden + h-screen agar halaman tidak bisa di-scroll sama sekali
     <div className="h-screen bg-gray-950 flex flex-col overflow-hidden">
 
       {/* Banner room ended */}
@@ -320,8 +319,14 @@ function RoomPageInner() {
         </form>
       )}
 
-      {/* Main Layout */}
-      <div className="flex flex-1 min-h-0">
+      {/*
+       * LAYOUT:
+       * Desktop (sm+): video kiri | chat+videocall kanan (side by side)
+       * Mobile: video atas (16:9) | chat+videocall bawah (sisa ruang)
+       */}
+
+      {/* Desktop layout */}
+      <div className="hidden sm:flex flex-1 min-h-0">
         {/* Video */}
         <div className="flex-1 min-w-0 min-h-0">
           <VideoPlayer
@@ -336,7 +341,7 @@ function RoomPageInner() {
 
         {/* Desktop: Chat + VideoCall */}
         {chatVisible && (
-          <div className="w-72 lg:w-80 shrink-0 hidden sm:flex sm:flex-col border-l border-white/10">
+          <div className="w-72 lg:w-80 shrink-0 flex flex-col border-l border-white/10">
             <VideoCall {...videoCallProps} />
             <Chat
               messages={messages}
@@ -348,23 +353,48 @@ function RoomPageInner() {
         )}
       </div>
 
-      {/* Mobile: Chat + VideoCall (bottom) */}
-      {chatVisible && (
-        <div
-          className="sm:hidden border-t border-white/10 bg-gray-900 shrink-0 flex flex-col"
-          style={{ maxHeight: "45vh" }}
-        >
-          <VideoCall {...videoCallProps} />
-          <Chat
-            messages={messages}
-            members={members}
-            onSend={sendMessage}
-            connected={connected}
+      {/*
+       * Mobile layout: video atas dengan aspect ratio 16:9, chat bawah mengisi sisa
+       * Ini buat tampilan lebih proporsional seperti YouTube mobile
+       */}
+      <div className="sm:hidden flex flex-col flex-1 min-h-0">
+        {/* Video area dengan aspect ratio 16:9 */}
+        <div className="w-full shrink-0 bg-black" style={{ aspectRatio: "16/9" }}>
+          <VideoPlayer
+            videoUrl={currentVideo.url}
+            videoTitle={currentVideo.title}
+            videoState={videoState}
+            isHost={isHostParam}
+            onControl={handleControlVideo}
+            onFullscreenChange={handleFullscreenChange}
           />
         </div>
-      )}
 
-      {/* Floating PiP saat fullscreen dirender oleh VideoCall sendiri */}
+        {/* Chat + VideoCall mengisi sisa ruang layar */}
+        {chatVisible && (
+          <div className="flex-1 min-h-0 flex flex-col border-t border-white/10 bg-gray-900">
+            <VideoCall {...videoCallProps} />
+            <Chat
+              messages={messages}
+              members={members}
+              onSend={sendMessage}
+              connected={connected}
+            />
+          </div>
+        )}
+
+        {/* Kalau chat disembunyikan, tampilkan tombol toggle yang floating */}
+        {!chatVisible && (
+          <button
+            onClick={() => setChatVisible(true)}
+            className="fixed bottom-4 right-4 z-40 bg-purple-600 text-white rounded-full p-3 shadow-lg"
+          >
+            <MessageSquare className="w-5 h-5" />
+          </button>
+        )}
+      </div>
+
+      {/* FloatingVideoCall saat fullscreen dirender oleh VideoCall sendiri */}
     </div>
   );
 }

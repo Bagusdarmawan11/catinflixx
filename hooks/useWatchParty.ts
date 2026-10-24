@@ -41,7 +41,6 @@ export function useWatchParty({
   videoUrl,
   videoTitle,
 }: UseWatchPartyOptions) {
-  // socketRef sebagai MutableRefObject agar bisa dipakai useVideoCall secara langsung
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [members, setMembers] = useState<RoomMember[]>([]);
@@ -56,11 +55,8 @@ export function useWatchParty({
     title: videoTitle,
   });
 
-  // Track apakah ini koneksi pertama atau reconnect
-  const isFirstConnect = useRef(true);
-
   useEffect(() => {
-    if (!userId) return; // Tunggu userId tersedia
+    if (!userId) return;
 
     const socketUrl =
       process.env.NEXT_PUBLIC_BASE_URL || window.location.origin;
@@ -69,7 +65,6 @@ export function useWatchParty({
       transports: ["websocket", "polling"],
       reconnectionAttempts: 5,
       reconnectionDelay: 2000,
-      // Kirim userId sebagai query agar server bisa identifikasi reconnect
       query: { userId: String(userId) },
     });
 
@@ -78,31 +73,27 @@ export function useWatchParty({
     socket.on("connect", () => {
       setConnected(true);
 
-      if (isFirstConnect.current) {
-        // Koneksi pertama — join normal
-        isFirstConnect.current = false;
-        socket.emit("join-room", {
-          roomCode,
-          userId,
-          name: userName,
-          isHost,
-          videoUrl,
-          videoTitle,
-          isReconnect: false,
-        });
-      } else {
-        // Reconnect (setelah refresh/putus) — pakai flag isReconnect
-        // Server akan tampilkan "kembali" bukan "bergabung"
-        socket.emit("join-room", {
-          roomCode,
-          userId,
-          name: userName,
-          isHost,
-          videoUrl,
-          videoTitle,
-          isReconnect: true,
-        });
-      }
+      /*
+       * Fix "bergabung 2x":
+       * Pakai sessionStorage sebagai flag per-sesi.
+       * - Saat pertama kali join dalam sesi browser → isReconnect: false → tampil pesan bergabung
+       * - Saat socket reconnect / React StrictMode re-run / HMR → isReconnect: true → tidak muncul pesan bergabung
+       * sessionStorage tidak persist ke tab baru, tapi persist dalam 1 tab session
+       */
+      const joinKey = `cf-joined-${roomCode}-${userId}`;
+      const alreadyJoined = sessionStorage.getItem(joinKey);
+      const isReconnect = !!alreadyJoined;
+      sessionStorage.setItem(joinKey, Date.now().toString());
+
+      socket.emit("join-room", {
+        roomCode,
+        userId,
+        name: userName,
+        isHost,
+        videoUrl,
+        videoTitle,
+        isReconnect,
+      });
     });
 
     socket.on("disconnect", () => setConnected(false));
@@ -170,7 +161,7 @@ export function useWatchParty({
   );
 
   return {
-    socketRef, // ← MutableRefObject<Socket | null>, reactive untuk useVideoCall
+    socketRef,
     connected,
     members,
     messages,

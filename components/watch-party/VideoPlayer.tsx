@@ -33,7 +33,6 @@ function extractYouTubeId(url: string): string | null {
   return null;
 }
 
-// Lock/unlock orientasi layar
 async function lockLandscape() {
   try {
     const scr = window.screen as any;
@@ -55,7 +54,6 @@ export default function VideoPlayer({
   onControl,
   onFullscreenChange,
 }: Props) {
-  const wrapperRef = useRef<HTMLDivElement>(null); // container fullscreen
   const playerDivRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const [apiReady, setApiReady] = useState(false);
@@ -63,6 +61,8 @@ export default function VideoPlayer({
   const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  // CSS custom fullscreen — tidak pakai browser Fullscreen API
+  // sehingga FloatingVideoCall (z-index: 200) bisa muncul di atasnya
   const [isFullscreen, setIsFullscreen] = useState(false);
   const syncLockRef = useRef(false);
 
@@ -96,8 +96,8 @@ export default function VideoPlayer({
         modestbranding: 1,
         rel: 0,
         disablekb: isHost ? 0 : 1,
-        fs: 0,          // matikan fullscreen button bawaan YouTube
-        playsinline: 1, // hindari native fullscreen iOS agar custom FS bisa kerja
+        fs: 0,         // sembunyikan tombol fullscreen bawaan YouTube
+        playsinline: 1,
       },
       events: {
         onReady: (e: any) => {
@@ -106,8 +106,7 @@ export default function VideoPlayer({
         onStateChange: (e: any) => {
           const YT = (window as any).YT.PlayerState;
           if (e.data === YT.PLAYING) setIsPlaying(true);
-          if (e.data === YT.PAUSED || e.data === YT.ENDED)
-            setIsPlaying(false);
+          if (e.data === YT.PAUSED || e.data === YT.ENDED) setIsPlaying(false);
           if (isHost && !syncLockRef.current) {
             const playing = e.data === YT.PLAYING;
             const ct = playerRef.current?.getCurrentTime() ?? 0;
@@ -146,41 +145,23 @@ export default function VideoPlayer({
     return () => clearInterval(interval);
   }, []);
 
-  // Detect browser fullscreen change (dari tombol custom kita)
+  // Cleanup orientation saat unmount
   useEffect(() => {
-    function onFsChange() {
-      const fs = !!document.fullscreenElement;
-      setIsFullscreen(fs);
-      onFullscreenChange?.(fs);
-      if (fs) lockLandscape();
-      else unlockOrientation();
-    }
-    document.addEventListener("fullscreenchange", onFsChange);
-    document.addEventListener("webkitfullscreenchange", onFsChange);
     return () => {
-      document.removeEventListener("fullscreenchange", onFsChange);
-      document.removeEventListener("webkitfullscreenchange", onFsChange);
+      unlockOrientation();
     };
-  }, [onFullscreenChange]);
-
-  // Toggle fullscreen pada wrapper div (bukan iframe YouTube)
-  const toggleFullscreen = useCallback(async () => {
-    const el = wrapperRef.current;
-    if (!el) return;
-    if (!document.fullscreenElement) {
-      try {
-        if (el.requestFullscreen) await el.requestFullscreen();
-        else if ((el as any).webkitRequestFullscreen)
-          await (el as any).webkitRequestFullscreen();
-      } catch (e) {
-        console.error("Fullscreen error:", e);
-      }
-    } else {
-      if (document.exitFullscreen) await document.exitFullscreen();
-      else if ((document as any).webkitExitFullscreen)
-        await (document as any).webkitExitFullscreen();
-    }
   }, []);
+
+  // Toggle CSS custom fullscreen — tidak bergantung browser Fullscreen API
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen((prev) => {
+      const next = !prev;
+      onFullscreenChange?.(next);
+      if (next) lockLandscape();
+      else unlockOrientation();
+      return next;
+    });
+  }, [onFullscreenChange]);
 
   function togglePlay() {
     if (!isHost || !playerRef.current) return;
@@ -239,15 +220,36 @@ export default function VideoPlayer({
   }
 
   return (
-    // wrapperRef = target fullscreen — meliputi iframe + custom controls
-    <div ref={wrapperRef} className="flex flex-col h-full bg-black">
+    /*
+     * CSS custom fullscreen:
+     * - Saat isFullscreen=true → position:fixed; inset:0; z-index:100
+     * - FloatingVideoCall pakai z-index:200 → selalu muncul di atas
+     * - Tidak pakai browser Fullscreen API → tidak diblokir iframe YouTube
+     */
+    <div
+      className="flex flex-col bg-black"
+      style={
+        isFullscreen
+          ? {
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 100,
+              height: "100dvh",
+              width: "100vw",
+            }
+          : { height: "100%" }
+      }
+    >
       {/* Iframe area */}
       <div className="relative flex-1 bg-black min-h-0">
         <div className="w-full h-full">
           <div ref={playerDivRef} className="w-full h-full" />
         </div>
 
-        {/* Tombol fullscreen overlay — pojok kanan bawah iframe */}
+        {/* Tombol fullscreen overlay — pojok kanan bawah */}
         <button
           onClick={toggleFullscreen}
           className="absolute bottom-2 right-2 z-10 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
@@ -259,9 +261,19 @@ export default function VideoPlayer({
             <Maximize className="w-4 h-4" />
           )}
         </button>
+
+        {/* Saat fullscreen: tombol minimize juga di pojok kiri atas untuk mudah dijangkau */}
+        {isFullscreen && (
+          <button
+            onClick={toggleFullscreen}
+            className="absolute top-2 left-2 z-10 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
+          >
+            <Minimize className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
-      {/* Custom Controls (tersembunyi saat fullscreen agar layar bersih) */}
+      {/* Custom Controls (tersembunyi saat fullscreen) */}
       {!isFullscreen && (
         <div className="bg-gray-950 border-t border-white/10 px-3 sm:px-4 py-2 sm:py-3 space-y-1.5 shrink-0">
           <p className="text-xs sm:text-sm font-medium text-white truncate">
