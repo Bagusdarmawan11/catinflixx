@@ -2,6 +2,8 @@ import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
 import { Server as SocketIOServer } from "socket.io";
+import * as fs from "fs";
+import * as path from "path";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = "0.0.0.0";
@@ -10,7 +12,50 @@ const port = parseInt(process.env.PORT || "3000", 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Persistent room store (survive server restart) ────────────────────────────
+// Simpan ke /tmp/catinflix-rooms.json (Render.com punya ephemeral disk di /tmp)
+const ROOMS_FILE = path.join("/tmp", "catinflix-rooms.json");
+
+interface PersistedRoom {
+  code: string;
+  hostUserId: number;
+  videoUrl: string;
+  videoTitle: string;
+  createdAt: number;
+  lastActiveAt: number;
+  videoState: { isPlaying: boolean; currentTime: number; updatedAt: number };
+}
+
+function loadPersistedRooms(): Map<string, PersistedRoom> {
+  try {
+    if (fs.existsSync(ROOMS_FILE)) {
+      const raw = fs.readFileSync(ROOMS_FILE, "utf-8");
+      const arr: PersistedRoom[] = JSON.parse(raw);
+      const now = Date.now();
+      const map = new Map<string, PersistedRoom>();
+      // Buang room yang sudah lebih dari 24 jam tidak aktif
+      arr
+        .filter((r) => now - r.lastActiveAt < 24 * 60 * 60 * 1000)
+        .forEach((r) => map.set(r.code, r));
+      console.log(`[Rooms] Loaded ${map.size} persisted rooms`);
+      return map;
+    }
+  } catch (e) {
+    console.error("[Rooms] Failed to load persisted rooms:", e);
+  }
+  return new Map();
+}
+
+function savePersistedRooms(map: Map<string, PersistedRoom>) {
+  try {
+    const arr = Array.from(map.values());
+    fs.writeFileSync(ROOMS_FILE, JSON.stringify(arr, null, 2), "utf-8");
+  } catch (e) {
+    console.error("[Rooms] Failed to save rooms:", e);
+  }
+}
+
+// ── In-memory runtime state ───────────────────────────────────────────────────
 interface RoomMember {
   userId: number;
   name: string;
@@ -18,40 +63,37 @@ interface RoomMember {
   isHost: boolean;
 }
 
-interface RoomState {
-  code: string;
-  hostUserId: number;
-  videoUrl: string;
-  videoTitle: string;
+interface RoomRuntime {
   members: Map<string, RoomMember>; // socketId → member
-  videoState: {
-    isPlaying: boolean;
-    currentTime: number;
-    updatedAt: number;
-  };
+  // hostGracePeriod: timer yang berjalan saat host disconnect
+  // room hanya dihapus kalau host tidak reconnect dalam waktu tertentu
+  hostDisconnectTimer?: ReturnType<typeof setTimeout>;
 }
 
-// ── In-memory stores ──────────────────────────────────────────────────────────
-const rooms = new Map<string, RoomState>();
+const persistedRooms = loadPersistedRooms();
+const runtimes = new Map<string, RoomRuntime>(); // roomCode → runtime
 
-// Video call participants: roomCode → Map<socketId, { userId, userName }>
+// Video call participants: roomCode → Map<socketId, info>
 const vcParticipants = new Map<
   string,
   Map<string, { userId: number; userName: string }>
 >();
 
-// ── Helper ────────────────────────────────────────────────────────────────────
-function broadcastMembers(
-  io: SocketIOServer,
-  roomCode: string,
-  room: RoomState
-) {
-  const memberList = Array.from(room.members.values()).map((m) => ({
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getOrCreateRuntime(roomCode: string): RoomRuntime {
+  if (!runtimes.has(roomCode)) {
+    runtimes.set(roomCode, { members: new Map() });
+  }
+  return runtimes.get(roomCode)!;
+}
+
+function broadcastMembers(io: SocketIOServer, roomCode: string, runtime: RoomRuntime) {
+  const list = Array.from(runtime.members.values()).map((m) => ({
     userId: m.userId,
     name: m.name,
     isHost: m.isHost,
   }));
-  io.to(roomCode).emit("room-members", memberList);
+  io.to(roomCode).emit("room-members", list);
 }
 
 function systemMsg(io: SocketIOServer, roomCode: string, message: string) {
@@ -65,7 +107,15 @@ function systemMsg(io: SocketIOServer, roomCode: string, message: string) {
   });
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+function deleteRoom(roomCode: string) {
+  persistedRooms.delete(roomCode);
+  runtimes.delete(roomCode);
+  vcParticipants.delete(roomCode);
+  savePersistedRooms(persistedRooms);
+  console.log(`[Rooms] Room ${roomCode} deleted`);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
 app.prepare().then(() => {
   const httpServer = createServer((req, res) => {
     const parsedUrl = parse(req.url!, true);
@@ -82,10 +132,11 @@ app.prepare().then(() => {
   });
 
   io.on("connection", (socket) => {
-    const clientUserId = parseInt(socket.handshake.query.userId as string) || 0;
+    const clientUserId =
+      parseInt(socket.handshake.query.userId as string) || 0;
     console.log(`[Socket] Connected: ${socket.id} (userId=${clientUserId})`);
 
-    // ── Join Room ────────────────────────────────────────────────────────────
+    // ── Join Room ─────────────────────────────────────────────────────────────
     socket.on(
       "join-room",
       (data: {
@@ -99,56 +150,59 @@ app.prepare().then(() => {
       }) => {
         const { roomCode, userId, name, isHost, videoUrl, videoTitle, isReconnect } = data;
 
-        // Buat room jika belum ada
-        if (!rooms.has(roomCode)) {
-          rooms.set(roomCode, {
+        // Buat / restore persisted room
+        if (!persistedRooms.has(roomCode)) {
+          if (!isHost) {
+            // Room tidak ada dan bukan host — tidak bisa join
+            socket.emit("room-error", { message: "Room tidak ditemukan" });
+            return;
+          }
+          persistedRooms.set(roomCode, {
             code: roomCode,
             hostUserId: userId,
             videoUrl,
             videoTitle,
-            members: new Map(),
+            createdAt: Date.now(),
+            lastActiveAt: Date.now(),
             videoState: { isPlaying: false, currentTime: 0, updatedAt: Date.now() },
           });
+          savePersistedRooms(persistedRooms);
         }
 
-        const room = rooms.get(roomCode)!;
+        const persisted = persistedRooms.get(roomCode)!;
+        persisted.lastActiveAt = Date.now();
 
-        // Cek apakah userId ini sudah ada di room (reconnect dari device lain / refresh)
+        // Kalau host reconnect, batalkan timer penghapusan
+        const runtime = getOrCreateRuntime(roomCode);
+        if (isHost && runtime.hostDisconnectTimer) {
+          clearTimeout(runtime.hostDisconnectTimer);
+          runtime.hostDisconnectTimer = undefined;
+          console.log(`[Rooms] Host reconnected, grace period cancelled for ${roomCode}`);
+        }
+
+        // Hapus socket lama untuk userId yang sama (reconnect/refresh)
         let wasAlreadyInRoom = false;
-        room.members.forEach((m) => {
+        runtime.members.forEach((m, sid) => {
           if (m.userId === userId) {
             wasAlreadyInRoom = true;
-            // Hapus entri socket lama
-            room.members.delete(m.socketId);
+            runtime.members.delete(sid);
           }
         });
 
-        // Daftarkan socket baru
-        room.members.set(socket.id, {
-          userId,
-          name,
-          socketId: socket.id,
-          isHost,
-        });
+        runtime.members.set(socket.id, { userId, name, socketId: socket.id, isHost });
         socket.join(roomCode);
 
-        // Kirim state ke user yang baru join
-        socket.emit("video-state-sync", room.videoState);
+        // Kirim state terkini ke user yang join
+        socket.emit("video-state-sync", persisted.videoState);
         socket.emit("room-info", {
-          videoUrl: room.videoUrl,
-          videoTitle: room.videoTitle,
-          hostUserId: room.hostUserId,
+          videoUrl: persisted.videoUrl,
+          videoTitle: persisted.videoTitle,
+          hostUserId: persisted.hostUserId,
         });
 
-        // Broadcast member list terbaru
-        broadcastMembers(io, roomCode, room);
+        broadcastMembers(io, roomCode, runtime);
 
-        // Sistem message: "bergabung" atau "kembali"
-        if (wasAlreadyInRoom || isReconnect) {
-          // Tidak tampilkan pesan apapun untuk reconnect agar tidak spam
-          // (opsional: aktifkan baris di bawah kalau mau ada notif kembali)
-          // systemMsg(io, roomCode, `${name} kembali ke room`);
-        } else {
+        if (!wasAlreadyInRoom && !isReconnect) {
           systemMsg(io, roomCode, `${name} bergabung ke room`);
         }
 
@@ -158,36 +212,46 @@ app.prepare().then(() => {
       }
     );
 
-    // ── Video Control ────────────────────────────────────────────────────────
+    // ── Host end room (sengaja keluar) ─────────────────────────────────────────
+    socket.on("end-room", (data: { roomCode: string; userId: number }) => {
+      const persisted = persistedRooms.get(data.roomCode);
+      if (!persisted) return;
+      if (persisted.hostUserId !== data.userId) return; // hanya host
+
+      systemMsg(io, data.roomCode, "Host telah mengakhiri room");
+      io.to(data.roomCode).emit("room-ended");
+      deleteRoom(data.roomCode);
+    });
+
+    // ── Video Control ─────────────────────────────────────────────────────────
     socket.on(
       "video-control",
       (data: { roomCode: string; isPlaying: boolean; currentTime: number }) => {
-        const room = rooms.get(data.roomCode);
-        if (!room) return;
-        const member = room.members.get(socket.id);
+        const persisted = persistedRooms.get(data.roomCode);
+        const runtime = runtimes.get(data.roomCode);
+        if (!persisted || !runtime) return;
+        const member = runtime.members.get(socket.id);
         if (!member?.isHost) return;
 
-        room.videoState = {
+        persisted.videoState = {
           isPlaying: data.isPlaying,
           currentTime: data.currentTime,
           updatedAt: Date.now(),
         };
-        socket.to(data.roomCode).emit("video-state-sync", room.videoState);
+        persisted.lastActiveAt = Date.now();
+        // Simpan video state ke disk secara throttled
+        savePersistedRooms(persistedRooms);
+
+        socket.to(data.roomCode).emit("video-state-sync", persisted.videoState);
       }
     );
 
-    // ── Chat Message ─────────────────────────────────────────────────────────
+    // ── Chat Message ──────────────────────────────────────────────────────────
     socket.on(
       "send-message",
-      (data: {
-        roomCode: string;
-        userId: number;
-        name: string;
-        message: string;
-      }) => {
+      (data: { roomCode: string; userId: number; name: string; message: string }) => {
         const { roomCode, userId, name, message } = data;
         if (!message?.trim()) return;
-
         const payload = {
           id: Date.now() + Math.random(),
           userId,
@@ -200,69 +264,54 @@ app.prepare().then(() => {
       }
     );
 
-    // ── Change Video ─────────────────────────────────────────────────────────
+    // ── Change Video ──────────────────────────────────────────────────────────
     socket.on(
       "change-video",
       (data: { roomCode: string; videoUrl: string; videoTitle: string }) => {
-        const room = rooms.get(data.roomCode);
-        if (!room) return;
-        const member = room.members.get(socket.id);
+        const persisted = persistedRooms.get(data.roomCode);
+        const runtime = runtimes.get(data.roomCode);
+        if (!persisted || !runtime) return;
+        const member = runtime.members.get(socket.id);
         if (!member?.isHost) return;
 
-        room.videoUrl = data.videoUrl;
-        room.videoTitle = data.videoTitle;
-        room.videoState = { isPlaying: false, currentTime: 0, updatedAt: Date.now() };
+        persisted.videoUrl = data.videoUrl;
+        persisted.videoTitle = data.videoTitle;
+        persisted.videoState = { isPlaying: false, currentTime: 0, updatedAt: Date.now() };
+        persisted.lastActiveAt = Date.now();
+        savePersistedRooms(persistedRooms);
 
         io.to(data.roomCode).emit("room-info", {
-          videoUrl: room.videoUrl,
-          videoTitle: room.videoTitle,
-          hostUserId: room.hostUserId,
+          videoUrl: persisted.videoUrl,
+          videoTitle: persisted.videoTitle,
+          hostUserId: persisted.hostUserId,
         });
-        io.to(data.roomCode).emit("video-state-sync", room.videoState);
+        io.to(data.roomCode).emit("video-state-sync", persisted.videoState);
       }
     );
 
     // ════════════════════════════════════════════════════════════════════════
-    // ── WebRTC Signaling ────────────────────────────────────────────────────
+    // ── WebRTC Signaling ──────────────────────────────────────────────────
     // ════════════════════════════════════════════════════════════════════════
 
-    // User join video call dalam room
     socket.on(
       "vc:join",
       (data: { roomCode: string; userId: number; userName: string }) => {
         const { roomCode, userId, userName } = data;
-
-        if (!vcParticipants.has(roomCode)) {
-          vcParticipants.set(roomCode, new Map());
-        }
+        if (!vcParticipants.has(roomCode)) vcParticipants.set(roomCode, new Map());
         const vcRoom = vcParticipants.get(roomCode)!;
-
-        // Beritahu semua peserta vc yang sudah ada bahwa ada user baru → mereka yang inisiasi offer
-        vcRoom.forEach((_p, existingSocketId) => {
-          io.to(existingSocketId).emit("vc:user-joined", {
-            socketId: socket.id,
-            userId,
-            userName,
-          });
+        vcRoom.forEach((_, existingSocketId) => {
+          io.to(existingSocketId).emit("vc:user-joined", { socketId: socket.id, userId, userName });
         });
-
-        // Daftarkan diri
         vcRoom.set(socket.id, { userId, userName });
-        console.log(`[VC] ${userName} joined vc in room ${roomCode} (${vcRoom.size} total)`);
+        console.log(`[VC] ${userName} joined vc (${vcRoom.size} total)`);
       }
     );
 
-    // Relay WebRTC offer (caller → callee)
     socket.on(
       "vc:offer",
-      (data: {
-        roomCode: string;
-        targetSocketId: string;
-        offer: RTCSessionDescriptionInit;
-      }) => {
-        const room = rooms.get(data.roomCode);
-        const sender = room?.members.get(socket.id);
-
+      (data: { roomCode: string; targetSocketId: string; offer: RTCSessionDescriptionInit }) => {
+        const runtime = runtimes.get(data.roomCode);
+        const sender = runtime?.members.get(socket.id);
         io.to(data.targetSocketId).emit("vc:offer", {
           fromSocketId: socket.id,
           fromUserId: sender?.userId ?? 0,
@@ -272,37 +321,20 @@ app.prepare().then(() => {
       }
     );
 
-    // Relay WebRTC answer (callee → caller)
     socket.on(
       "vc:answer",
-      (data: {
-        roomCode: string;
-        targetSocketId: string;
-        answer: RTCSessionDescriptionInit;
-      }) => {
-        io.to(data.targetSocketId).emit("vc:answer", {
-          fromSocketId: socket.id,
-          answer: data.answer,
-        });
+      (data: { roomCode: string; targetSocketId: string; answer: RTCSessionDescriptionInit }) => {
+        io.to(data.targetSocketId).emit("vc:answer", { fromSocketId: socket.id, answer: data.answer });
       }
     );
 
-    // Relay ICE candidate (keduanya arah)
     socket.on(
       "vc:ice-candidate",
-      (data: {
-        roomCode: string;
-        targetSocketId: string;
-        candidate: RTCIceCandidateInit;
-      }) => {
-        io.to(data.targetSocketId).emit("vc:ice-candidate", {
-          fromSocketId: socket.id,
-          candidate: data.candidate,
-        });
+      (data: { roomCode: string; targetSocketId: string; candidate: RTCIceCandidateInit }) => {
+        io.to(data.targetSocketId).emit("vc:ice-candidate", { fromSocketId: socket.id, candidate: data.candidate });
       }
     );
 
-    // User keluar dari video call tapi tetap di room
     socket.on("vc:leave", (data: { roomCode: string; userId: number }) => {
       const vcRoom = vcParticipants.get(data.roomCode);
       if (vcRoom) {
@@ -310,7 +342,6 @@ app.prepare().then(() => {
         if (vcRoom.size === 0) vcParticipants.delete(data.roomCode);
       }
       socket.to(data.roomCode).emit("vc:user-left", { socketId: socket.id });
-      console.log(`[VC] User left vc in room ${data.roomCode}`);
     });
 
     // ── Disconnect ────────────────────────────────────────────────────────────
@@ -324,27 +355,35 @@ app.prepare().then(() => {
         }
       });
 
-      // Cleanup watch party
-      rooms.forEach((room, roomCode) => {
-        const member = room.members.get(socket.id);
+      // Cleanup watch party runtime
+      runtimes.forEach((runtime, roomCode) => {
+        const member = runtime.members.get(socket.id);
         if (!member) return;
 
-        room.members.delete(socket.id);
+        runtime.members.delete(socket.id);
 
-        if (room.members.size === 0) {
-          // Delay delete room 30 detik untuk toleransi reconnect
-          setTimeout(() => {
-            if (rooms.get(roomCode)?.members.size === 0) {
-              rooms.delete(roomCode);
-              console.log(`[Socket] Room ${roomCode} deleted (empty)`);
+        if (member.isHost) {
+          // Host disconnect: beri grace period 5 menit untuk reconnect
+          // Room TIDAK langsung dihapus
+          console.log(`[Rooms] Host disconnected from ${roomCode}, starting 5min grace period`);
+          runtime.hostDisconnectTimer = setTimeout(() => {
+            // Cek apakah host sudah reconnect
+            const rt = runtimes.get(roomCode);
+            const hostBack = rt
+              ? Array.from(rt.members.values()).some((m) => m.isHost)
+              : false;
+            if (!hostBack) {
+              // Host tidak kembali → hapus room
+              systemMsg(io, roomCode, "Host telah meninggalkan room. Room berakhir.");
+              io.to(roomCode).emit("room-ended");
+              deleteRoom(roomCode);
             }
-          }, 30_000);
-          return;
+          }, 5 * 60 * 1000); // 5 menit
+        } else {
+          // Guest biasa disconnect: update member list saja
+          broadcastMembers(io, roomCode, runtime);
+          // Tidak tampilkan pesan sistem saat disconnect (bisa reconnect)
         }
-
-        broadcastMembers(io, roomCode, room);
-        // Tidak tampilkan sistem pesan saat disconnect agar tidak spam saat refresh
-        // (reconnect akan join ulang dalam beberapa detik)
       });
 
       console.log(`[Socket] Disconnected: ${socket.id}`);

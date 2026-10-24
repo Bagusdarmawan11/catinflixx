@@ -13,10 +13,26 @@ interface Props {
 
 export default function Chat({ messages, members, onSend, connected }: Props) {
   const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // Ref ke scroll container (bukan ke elemen terakhir)
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isAtBottomRef = useRef(true);
 
+  // Deteksi apakah user sedang scroll ke atas (baca pesan lama)
+  function onScroll() {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const threshold = 60; // px dari bawah
+    isAtBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  }
+
+  // Scroll ke bawah dalam container saja — tidak pakai scrollIntoView
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!isAtBottomRef.current) return; // jangan ganggu kalau user lagi scroll ke atas
+    const el = scrollContainerRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [messages]);
 
   function submit(e: React.FormEvent) {
@@ -25,25 +41,42 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
     if (!msg || !connected) return;
     onSend(msg);
     setInput("");
+    // Paksa scroll ke bawah setelah kirim pesan sendiri
+    isAtBottomRef.current = true;
+    setTimeout(() => {
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 50);
   }
 
   function formatTime(iso: string) {
-    return new Date(iso).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+    return new Date(iso).toLocaleTimeString("id-ID", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
 
   return (
-    <div className="flex flex-col h-full bg-gray-900/80 border-l border-white/10">
+    <div className="flex flex-col flex-1 min-h-0 bg-gray-900/80">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
         <h3 className="text-sm font-semibold text-white">Chat Room</h3>
-        <span className={`text-xs px-2 py-0.5 rounded-full ${connected ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+        <span
+          className={`text-xs px-2 py-0.5 rounded-full ${
+            connected
+              ? "bg-green-500/20 text-green-400"
+              : "bg-red-500/20 text-red-400"
+          }`}
+        >
           {connected ? "Online" : "Offline"}
         </span>
       </div>
 
       {/* Members */}
       <div className="px-4 py-2 border-b border-white/10 shrink-0">
-        <p className="text-xs text-gray-400 mb-1.5">Anggota ({members.length})</p>
+        <p className="text-xs text-gray-400 mb-1.5">
+          Anggota ({members.length})
+        </p>
         <div className="flex flex-wrap gap-1.5">
           {members.map((m) => (
             <div
@@ -51,17 +84,29 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
               title={m.isHost ? `${m.name} (Host)` : m.name}
               className="flex items-center gap-1 bg-gray-800 rounded-full px-2 py-0.5"
             >
-              <div className={`w-1.5 h-1.5 rounded-full ${m.isHost ? "bg-yellow-400" : "bg-green-400"}`} />
-              <span className="text-xs text-gray-200 max-w-[80px] truncate">{m.name}</span>
+              <div
+                className={`w-1.5 h-1.5 rounded-full ${
+                  m.isHost ? "bg-yellow-400" : "bg-green-400"
+                }`}
+              />
+              <span className="text-xs text-gray-200 max-w-[80px] truncate">
+                {m.name}
+              </span>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 min-h-0">
+      {/* Messages — scroll hanya di sini, bukan di seluruh halaman */}
+      <div
+        ref={scrollContainerRef}
+        onScroll={onScroll}
+        className="flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-2 min-h-0"
+      >
         {messages.length === 0 && (
-          <p className="text-xs text-gray-500 text-center mt-8">Belum ada pesan. Mulai chat!</p>
+          <p className="text-xs text-gray-500 text-center mt-8">
+            Belum ada pesan. Mulai chat!
+          </p>
         )}
         {messages.map((msg) => (
           <div key={msg.id} className={msg.isSystem ? "text-center" : ""}>
@@ -73,14 +118,17 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
                   <span className="text-xs font-semibold text-purple-400 truncate max-w-[100px]">
                     {msg.name}
                   </span>
-                  <span className="text-[10px] text-gray-600 shrink-0">{formatTime(msg.timestamp)}</span>
+                  <span className="text-[10px] text-gray-600 shrink-0">
+                    {formatTime(msg.timestamp)}
+                  </span>
                 </div>
-                <p className="text-sm text-gray-200 break-words mt-0.5">{msg.message}</p>
+                <p className="text-sm text-gray-200 break-words mt-0.5">
+                  {msg.message}
+                </p>
               </div>
             )}
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
 
       {/* Input */}
@@ -93,6 +141,13 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
             placeholder={connected ? "Ketik pesan..." : "Menghubungkan..."}
             disabled={!connected}
             maxLength={300}
+            // onFocus: jangan auto-scroll halaman saat keyboard muncul di mobile
+            onFocus={() => {
+              setTimeout(() => {
+                const el = scrollContainerRef.current;
+                if (el) el.scrollTop = el.scrollHeight;
+              }, 300); // tunggu keyboard muncul
+            }}
             className="flex-1 bg-gray-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
           />
           <button

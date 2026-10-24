@@ -2,7 +2,15 @@
 
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { Share2, X, Check, ChevronDown, ChevronUp, MessageSquare, MessageSquareOff } from "lucide-react";
+import {
+  Share2,
+  X,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  MessageSquare,
+  MessageSquareOff,
+} from "lucide-react";
 import VideoPlayer from "@/components/watch-party/VideoPlayer";
 import Chat from "@/components/watch-party/Chat";
 import VideoCall from "@/components/watch-party/VideoCall";
@@ -34,8 +42,11 @@ function RoomPageInner() {
   const [newTitle, setNewTitle] = useState("");
   const [copied, setCopied] = useState(false);
 
-  // Track apakah video player sedang fullscreen
+  // Fullscreen state — diupdate dari VideoPlayer via callback
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Room ended banner
+  const [roomEnded, setRoomEnded] = useState(false);
 
   // Auth check
   useEffect(() => {
@@ -70,19 +81,6 @@ function RoomPageInner() {
     validateRoom();
   }, [roomCode, user]);
 
-  // Detect fullscreen change (native browser fullscreen API)
-  useEffect(() => {
-    function onFsChange() {
-      setIsFullscreen(!!document.fullscreenElement);
-    }
-    document.addEventListener("fullscreenchange", onFsChange);
-    document.addEventListener("webkitfullscreenchange", onFsChange);
-    return () => {
-      document.removeEventListener("fullscreenchange", onFsChange);
-      document.removeEventListener("webkitfullscreenchange", onFsChange);
-    };
-  }, []);
-
   const {
     socketRef,
     connected,
@@ -102,7 +100,18 @@ function RoomPageInner() {
     videoTitle: initialVideoTitle,
   });
 
-  // ★ Pass socketRef (bukan socket value) agar useVideoCall selalu dapat instance terbaru
+  // Dengarkan event room-ended dari server
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    const handler = () => {
+      setRoomEnded(true);
+      setTimeout(() => router.push("/watch-party"), 4000);
+    };
+    socket.on("room-ended", handler);
+    return () => { socket.off("room-ended", handler); };
+  }, [socketRef, router]);
+
   const {
     callActive,
     localStream,
@@ -127,6 +136,11 @@ function RoomPageInner() {
     [controlVideo]
   );
 
+  // Callback dari VideoPlayer saat fullscreen berubah
+  const handleFullscreenChange = useCallback((fs: boolean) => {
+    setIsFullscreen(fs);
+  }, []);
+
   function copyCode() {
     navigator.clipboard.writeText(roomCode).then(() => {
       setCopied(true);
@@ -141,6 +155,14 @@ function RoomPageInner() {
     setNewUrl("");
     setNewTitle("");
     setShowChangeVideo(false);
+  }
+
+  function handleExitRoom() {
+    if (isHostParam) {
+      // Host sengaja keluar → kirim end-room ke server
+      socketRef.current?.emit("end-room", { roomCode, userId: user?.id });
+    }
+    router.push("/watch-party");
   }
 
   if (authLoading || roomValid === null) {
@@ -162,8 +184,8 @@ function RoomPageInner() {
           <h2 className="text-xl font-bold text-white mb-2">Room Tidak Ditemukan</h2>
           <p className="text-gray-400 mb-6">
             Room dengan kode{" "}
-            <span className="font-mono text-purple-400">{roomCode}</span> tidak ada
-            atau sudah berakhir.
+            <span className="font-mono text-purple-400">{roomCode}</span> tidak
+            ada atau sudah berakhir.
           </p>
           <button
             onClick={() => router.push("/watch-party")}
@@ -176,7 +198,6 @@ function RoomPageInner() {
     );
   }
 
-  // Props VideoCall yang sama untuk desktop dan mobile
   const videoCallProps = {
     callActive,
     localStream,
@@ -192,13 +213,25 @@ function RoomPageInner() {
   };
 
   return (
-    // pt-0 karena navbar sudah di-hide via Navbar.tsx (pathname check)
+    // overflow-hidden + h-screen agar halaman tidak bisa di-scroll sama sekali
     <div className="h-screen bg-gray-950 flex flex-col overflow-hidden">
+
+      {/* Banner room ended */}
+      {roomEnded && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80">
+          <div className="text-center p-8 bg-gray-900 rounded-2xl border border-white/10">
+            <div className="text-4xl mb-3">👋</div>
+            <h2 className="text-xl font-bold text-white mb-2">Room telah berakhir</h2>
+            <p className="text-gray-400 text-sm">Kamu akan dialihkan sebentar lagi...</p>
+          </div>
+        </div>
+      )}
+
       {/* Top Bar */}
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-gray-900 border-b border-white/10 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
-            onClick={() => router.push("/watch-party")}
+            onClick={handleExitRoom}
             className="text-gray-400 hover:text-white transition-colors shrink-0"
           >
             <X className="w-5 h-5" />
@@ -208,13 +241,13 @@ function RoomPageInner() {
               {currentVideo.title}
             </h1>
             <p className="text-xs text-gray-500">
-              {members.length} penonton · {isHostParam ? "Kamu Host" : "Tamu"}
+              {members.length} penonton ·{" "}
+              {isHostParam ? "Kamu Host" : "Tamu"}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* Room code */}
           <button
             onClick={copyCode}
             className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-lg px-2 sm:px-3 py-1.5 transition-colors"
@@ -230,7 +263,6 @@ function RoomPageInner() {
             )}
           </button>
 
-          {/* Change video (host) */}
           {isHostParam && (
             <button
               onClick={() => setShowChangeVideo(!showChangeVideo)}
@@ -245,7 +277,6 @@ function RoomPageInner() {
             </button>
           )}
 
-          {/* Toggle Chat */}
           <button
             onClick={() => setChatVisible(!chatVisible)}
             className="text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg p-1.5 transition-colors"
@@ -299,10 +330,11 @@ function RoomPageInner() {
             videoState={videoState}
             isHost={isHostParam}
             onControl={handleControlVideo}
+            onFullscreenChange={handleFullscreenChange}
           />
         </div>
 
-        {/* Desktop: Chat + VideoCall panel */}
+        {/* Desktop: Chat + VideoCall */}
         {chatVisible && (
           <div className="w-72 lg:w-80 shrink-0 hidden sm:flex sm:flex-col border-l border-white/10">
             <VideoCall {...videoCallProps} />
@@ -332,7 +364,7 @@ function RoomPageInner() {
         </div>
       )}
 
-      {/* Floating PiP saat fullscreen + call aktif — di-render VideoCall sendiri */}
+      {/* Floating PiP saat fullscreen dirender oleh VideoCall sendiri */}
     </div>
   );
 }
