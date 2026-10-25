@@ -20,10 +20,12 @@ interface Props {
   isHost: boolean;
   onControl: (isPlaying: boolean, currentTime: number) => void;
   onFullscreenChange?: (isFullscreen: boolean) => void;
+  // ID unik untuk player agar tidak konflik jika ada >1 instance
+  playerId?: string;
 }
 
-// ID stabil untuk player — 1 player per halaman
-const YT_PLAYER_ID = "catinflix-yt-player";
+// Default player ID — boleh di-override lewat prop
+const DEFAULT_PLAYER_ID = "catinflix-yt-player";
 
 function extractYouTubeId(url: string): string | null {
   try {
@@ -35,19 +37,6 @@ function extractYouTubeId(url: string): string | null {
   return null;
 }
 
-async function lockLandscape() {
-  try {
-    const scr = window.screen as any;
-    if (scr.orientation?.lock) await scr.orientation.lock("landscape");
-  } catch {}
-}
-async function unlockOrientation() {
-  try {
-    const scr = window.screen as any;
-    if (scr.orientation?.unlock) scr.orientation.unlock();
-  } catch {}
-}
-
 export default function VideoPlayer({
   videoUrl,
   videoTitle,
@@ -55,8 +44,11 @@ export default function VideoPlayer({
   isHost,
   onControl,
   onFullscreenChange,
+  playerId = DEFAULT_PLAYER_ID,
 }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
+  const playerReadyRef = useRef(false); // FIX: gate progress bar updates
   const [apiReady, setApiReady] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -74,6 +66,78 @@ export default function VideoPlayer({
 
   const videoId = extractYouTubeId(videoUrl);
 
+  // ─── FULLSCREEN HELPERS ───────────────────────────────────────────────────
+
+  const enterFullscreen = useCallback(async () => {
+    const el = containerRef.current;
+    if (!el) return;
+    // FIX: gunakan native requestFullscreen + orientation lock
+    try {
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if ((el as any).webkitRequestFullscreen) {
+        (el as any).webkitRequestFullscreen();
+      }
+    } catch {}
+    // Lock landscape setelah native fullscreen aktif (delay kecil)
+    setTimeout(async () => {
+      try {
+        const scr = window.screen as any;
+        if (scr.orientation?.lock) await scr.orientation.lock("landscape");
+      } catch {}
+    }, 100);
+  }, []);
+
+  const exitFullscreen = useCallback(async () => {
+    try {
+      const doc = document as any;
+      if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
+      }
+    } catch {}
+    try {
+      const scr = window.screen as any;
+      if (scr.orientation?.unlock) scr.orientation.unlock();
+    } catch {}
+  }, []);
+
+  // FIX: Sync state ke native fullscreen change (misal user tekan Esc)
+  useEffect(() => {
+    const handleFSChange = () => {
+      const doc = document as any;
+      const nativeFS = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+      if (!nativeFS && isFullscreen) {
+        setIsFullscreen(false);
+        onFullscreenChange?.(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", handleFSChange);
+    document.addEventListener("webkitfullscreenchange", handleFSChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFSChange);
+      document.removeEventListener("webkitfullscreenchange", handleFSChange);
+    };
+  }, [isFullscreen, onFullscreenChange]);
+
+  const toggleFullscreen = useCallback(() => {
+    const next = !isFullscreen;
+    setIsFullscreen(next);
+    onFullscreenChange?.(next);
+    if (next) enterFullscreen();
+    else exitFullscreen();
+  }, [isFullscreen, onFullscreenChange, enterFullscreen, exitFullscreen]);
+
+  // Cleanup orientation saat unmount
+  useEffect(() => {
+    return () => {
+      exitFullscreen();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── YOUTUBE IFRAME API ───────────────────────────────────────────────────
+
   // Load YouTube IFrame API sekali
   useEffect(() => {
     if ((window as any).YT?.Player) {
@@ -81,7 +145,11 @@ export default function VideoPlayer({
       return;
     }
     if (document.querySelector('script[src*="youtube.com/iframe_api"]')) {
-      (window as any).onYouTubeIframeAPIReady = () => setApiReady(true);
+      const prev = (window as any).onYouTubeIframeAPIReady;
+      (window as any).onYouTubeIframeAPIReady = () => {
+        if (typeof prev === "function") prev();
+        setApiReady(true);
+      };
       return;
     }
     const tag = document.createElement("script");
@@ -94,11 +162,11 @@ export default function VideoPlayer({
   useEffect(() => {
     if (!apiReady || !videoId) return;
 
-    // Reset playerReady saat videoId berubah
     setPlayerReady(false);
+    playerReadyRef.current = false;
 
     const timer = setTimeout(() => {
-      const el = document.getElementById(YT_PLAYER_ID);
+      const el = document.getElementById(playerId);
       if (!el) return;
 
       if (playerRef.current) {
@@ -106,7 +174,7 @@ export default function VideoPlayer({
         playerRef.current = null;
       }
 
-      playerRef.current = new (window as any).YT.Player(YT_PLAYER_ID, {
+      playerRef.current = new (window as any).YT.Player(playerId, {
         width: "100%",
         height: "100%",
         videoId,
@@ -116,47 +184,63 @@ export default function VideoPlayer({
           modestbranding: 1,
           rel: 0,
           disablekb: isHost ? 0 : 1,
-          fs: 0,
+          fs: 0, // kita handle fullscreen sendiri
           playsinline: 1,
         },
         events: {
           onReady: (e: any) => {
-            setDuration(e.target.getDuration() || 0);
+            // FIX: simpan e.target (player siap pakai)
+            playerRef.current = e.target;
 
-            // Force iframe fill container
+            // Force iframe fill container agar tidak hitam di mobile
             try {
               const iframe = e.target.getIframe();
               if (iframe) {
-                iframe.style.width = "100%";
-                iframe.style.height = "100%";
-                iframe.style.display = "block";
+                iframe.style.cssText =
+                  "width:100%!important;height:100%!important;display:block;position:absolute;top:0;left:0;";
               }
             } catch {}
 
-            // ─── FIX UTAMA: apply videoState saat player pertama ready ───
-            // Ini yang menyebabkan YouTube tidak muncul di sisi user:
-            // user menerima video-state-sync sebelum player siap,
-            // jadi sync effect-nya no-op. Sekarang kita apply ulang di sini.
+            // Update durasi
+            const dur = e.target.getDuration?.() || 0;
+            if (dur > 0) setDuration(dur);
+
+            // Apply videoState untuk guest saat player pertama ready
             if (!isHost) {
               const state = videoStateRef.current;
               const serverTime =
                 state.currentTime + (Date.now() - state.updatedAt) / 1000;
               try {
                 e.target.seekTo(serverTime, true);
-                if (state.isPlaying) {
-                  e.target.playVideo();
-                } else {
-                  e.target.pauseVideo();
-                }
+                if (state.isPlaying) e.target.playVideo();
+                else e.target.pauseVideo();
               } catch {}
             }
 
+            playerReadyRef.current = true;
             setPlayerReady(true);
+
+            // Retry getDuration setelah 2s jika masih 0 (streaming/lazy load)
+            setTimeout(() => {
+              try {
+                const d = playerRef.current?.getDuration?.();
+                if (d && d > 0) setDuration(d);
+              } catch {}
+            }, 2000);
           },
           onStateChange: (e: any) => {
             const YT = (window as any).YT?.PlayerState;
             if (!YT) return;
-            if (e.data === YT.PLAYING) setIsPlaying(true);
+            if (e.data === YT.PLAYING) {
+              setIsPlaying(true);
+              // FIX: update currentTime saat mulai play
+              try {
+                const ct = playerRef.current?.getCurrentTime?.();
+                if (typeof ct === "number") setCurrentTime(ct);
+                const dur = playerRef.current?.getDuration?.();
+                if (typeof dur === "number" && dur > 0) setDuration(dur);
+              } catch {}
+            }
             if (e.data === YT.PAUSED || e.data === YT.ENDED)
               setIsPlaying(false);
             if (isHost && !syncLockRef.current) {
@@ -175,7 +259,7 @@ export default function VideoPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiReady, videoId]);
 
-  // Sync state dari socket (untuk guest) — hanya aktif setelah player ready
+  // Sync state dari socket (untuk guest)
   useEffect(() => {
     if (!playerRef.current || isHost || !playerReady) return;
     syncLockRef.current = true;
@@ -189,32 +273,21 @@ export default function VideoPlayer({
     setTimeout(() => { syncLockRef.current = false; }, 500);
   }, [videoState, isHost, playerReady]);
 
-  // Update progress setiap detik
+  // FIX: Progress bar — update tiap 500ms, gate dengan playerReadyRef
   useEffect(() => {
     const interval = setInterval(() => {
-      if (playerRef.current?.getCurrentTime) {
-        setCurrentTime(playerRef.current.getCurrentTime());
-        const dur = playerRef.current.getDuration?.() || 0;
-        if (dur) setDuration(dur);
-      }
-    }, 1000);
+      if (!playerReadyRef.current || !playerRef.current) return;
+      try {
+        const ct = playerRef.current.getCurrentTime?.();
+        const dur = playerRef.current.getDuration?.();
+        if (typeof ct === "number") setCurrentTime(ct);
+        if (typeof dur === "number" && dur > 0) setDuration(dur);
+      } catch {}
+    }, 500);
     return () => clearInterval(interval);
   }, []);
 
-  // Cleanup orientation saat unmount
-  useEffect(() => {
-    return () => { unlockOrientation(); };
-  }, []);
-
-  const toggleFullscreen = useCallback(() => {
-    setIsFullscreen((prev) => {
-      const next = !prev;
-      onFullscreenChange?.(next);
-      if (next) lockLandscape();
-      else unlockOrientation();
-      return next;
-    });
-  }, [onFullscreenChange]);
+  // ─── CONTROLS ────────────────────────────────────────────────────────────
 
   function togglePlay() {
     if (!isHost || !playerRef.current) return;
@@ -274,27 +347,24 @@ export default function VideoPlayer({
 
   return (
     <div
-      className={`flex flex-col bg-black ${isFullscreen ? "" : "h-full w-full"}`}
-      style={
-        isFullscreen
-          ? {
-              position: "fixed",
-              top: 0, left: 0, right: 0, bottom: 0,
-              zIndex: 100,
-            }
-          : undefined
-      }
+      ref={containerRef}
+      className="flex flex-col bg-black h-full w-full"
     >
       {/* YouTube Player Area */}
       <div className="relative flex-1 bg-black min-h-0 overflow-hidden">
+        {/* FIX: player div pakai absolute fill agar iframe dapat height yang benar di mobile */}
         <div
-          id={YT_PLAYER_ID}
-          style={{ width: "100%", height: "100%", display: "block" }}
-        />
+          style={{ position: "absolute", inset: 0, overflow: "hidden" }}
+        >
+          <div
+            id={playerId}
+            style={{ width: "100%", height: "100%", display: "block", position: "relative" }}
+          />
+        </div>
 
-        {/* Overlay "Menghubungkan video..." saat player belum ready (hanya untuk user/guest) */}
+        {/* Overlay "Menghubungkan video..." — hanya untuk guest sebelum player ready */}
         {!playerReady && !isHost && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10">
+          <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10 pointer-events-none">
             <div className="text-center">
               <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
               <p className="text-xs text-gray-400">Menghubungkan video...</p>
@@ -302,10 +372,10 @@ export default function VideoPlayer({
           </div>
         )}
 
-        {/* Tombol fullscreen */}
+        {/* Tombol fullscreen — kanan bawah */}
         <button
           onClick={toggleFullscreen}
-          className="absolute bottom-2 right-2 z-10 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
+          className="absolute bottom-2 right-2 z-20 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
           title={isFullscreen ? "Keluar fullscreen" : "Fullscreen"}
         >
           {isFullscreen ? (
@@ -315,10 +385,11 @@ export default function VideoPlayer({
           )}
         </button>
 
+        {/* Tombol exit fullscreen — kiri atas (saat fullscreen) */}
         {isFullscreen && (
           <button
             onClick={toggleFullscreen}
-            className="absolute top-2 left-2 z-10 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
+            className="absolute top-2 left-2 z-20 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
           >
             <Minimize className="w-4 h-4" />
           </button>
@@ -326,75 +397,73 @@ export default function VideoPlayer({
       </div>
 
       {/* Custom Controls */}
-      {!isFullscreen && (
-        <div className="bg-gray-950 border-t border-white/10 px-3 sm:px-4 py-2 sm:py-3 space-y-1.5 shrink-0">
-          <p className="text-xs sm:text-sm font-medium text-white truncate">
-            {videoTitle}
-          </p>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <span className="text-xs text-gray-400 w-9 shrink-0">
-              {formatTime(currentTime)}
-            </span>
-            <input
-              type="range"
-              min={0}
-              max={duration || 100}
-              value={currentTime}
-              onChange={seek}
-              disabled={!isHost}
-              className="flex-1 h-1 accent-purple-500 disabled:opacity-40 cursor-pointer disabled:cursor-default"
-            />
-            <span className="text-xs text-gray-400 w-9 shrink-0 text-right">
-              {formatTime(duration)}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            {isHost && (
-              <>
-                <button
-                  onClick={restart}
-                  className="text-gray-400 hover:text-white transition-colors"
-                >
-                  <SkipBack className="w-4 h-4 sm:w-5 sm:h-5" />
-                </button>
-                <button
-                  onClick={togglePlay}
-                  className="bg-purple-600 hover:bg-purple-700 text-white rounded-full p-1.5 sm:p-2 transition-colors"
-                >
-                  {isPlaying ? (
-                    <Pause className="w-4 h-4 sm:w-5 sm:h-5" />
-                  ) : (
-                    <Play className="w-4 h-4 sm:w-5 sm:h-5" />
-                  )}
-                </button>
-              </>
-            )}
-            <button
-              onClick={toggleMute}
-              className="text-gray-400 hover:text-white transition-colors"
-            >
-              {muted ? (
-                <VolumeX className="w-4 h-4 sm:w-5 sm:h-5" />
-              ) : (
-                <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
-              )}
-            </button>
-            <a
-              href={videoUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="ml-auto text-gray-500 hover:text-gray-300 transition-colors"
-            >
-              <ExternalLink className="w-4 h-4" />
-            </a>
-            {!isHost && (
-              <span className="text-[10px] sm:text-xs text-gray-500 italic">
-                Hanya host yang bisa mengontrol video
-              </span>
-            )}
-          </div>
+      <div className="bg-gray-950 border-t border-white/10 px-3 sm:px-4 py-2 sm:py-3 space-y-1.5 shrink-0">
+        <p className="text-xs sm:text-sm font-medium text-white truncate">
+          {videoTitle}
+        </p>
+        <div className="flex items-center gap-2 sm:gap-3">
+          <span className="text-xs text-gray-400 w-9 shrink-0">
+            {formatTime(currentTime)}
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={duration || 100}
+            value={currentTime}
+            onChange={seek}
+            disabled={!isHost}
+            className="flex-1 h-1 accent-purple-500 disabled:opacity-40 cursor-pointer disabled:cursor-default"
+          />
+          <span className="text-xs text-gray-400 w-9 shrink-0 text-right">
+            {formatTime(duration)}
+          </span>
         </div>
-      )}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {isHost && (
+            <>
+              <button
+                onClick={restart}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                <SkipBack className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+              <button
+                onClick={togglePlay}
+                className="bg-purple-600 hover:bg-purple-700 text-white rounded-full p-1.5 sm:p-2 transition-colors"
+              >
+                {isPlaying ? (
+                  <Pause className="w-4 h-4 sm:w-5 sm:h-5" />
+                ) : (
+                  <Play className="w-4 h-4 sm:w-5 sm:h-5" />
+                )}
+              </button>
+            </>
+          )}
+          <button
+            onClick={toggleMute}
+            className="text-gray-400 hover:text-white transition-colors"
+          >
+            {muted ? (
+              <VolumeX className="w-4 h-4 sm:w-5 sm:h-5" />
+            ) : (
+              <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
+            )}
+          </button>
+          <a
+            href={videoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-auto text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </a>
+          {!isHost && (
+            <span className="text-[10px] sm:text-xs text-gray-500 italic">
+              Hanya host yang bisa mengontrol video
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

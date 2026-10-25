@@ -249,8 +249,15 @@ function RoomPageInner() {
   };
 
   return (
-    <div className="h-screen bg-gray-950 flex flex-col overflow-hidden relative">
-
+    /*
+     * FIX: Gunakan h-[100svh] (small viewport height) — memperhitungkan
+     * browser chrome (address bar) di mobile, sehingga chat input tidak
+     * terpotong di bawah.
+     */
+    <div
+      className="bg-gray-950 flex flex-col overflow-hidden relative"
+      style={{ height: "100svh" }}
+    >
       {showDisconnect && !roomEnded && (
         <DisconnectBanner onRetry={handleRetryConnect} />
       )}
@@ -326,9 +333,32 @@ function RoomPageInner() {
         </form>
       )}
 
-      {/* Desktop */}
-      <div className="hidden sm:flex flex-1 min-h-0">
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+      {/*
+       * FIX: Layout utama — SATU VideoPlayer untuk mobile dan desktop.
+       *
+       * Mobile (< sm): flex-col
+       *   - Video: aspect-video (16:9), shrink-0
+       *   - Chat: flex-1, min-h-0 → mengisi sisa tinggi layar
+       *
+       * Desktop (>= sm): flex-row
+       *   - Video: flex-1, min-w-0, aspect-auto → mengisi lebar tersisa
+       *   - Chat: w-72/w-80, shrink-0 → sidebar tetap
+       *
+       * Sebelumnya ada DUA VideoPlayer terpisah (mobile & desktop) dengan
+       * ID yang sama, menyebabkan konflik init YouTube API dan video hitam.
+       */}
+      <div className="flex-1 min-h-0 flex flex-col sm:flex-row overflow-hidden">
+
+        {/* Area Video — SATU instance untuk semua ukuran layar */}
+        <div
+          className={[
+            "bg-black relative overflow-hidden",
+            // Mobile: ratio 16:9, tidak shrink
+            "w-full shrink-0 aspect-video",
+            // Desktop: hapus ratio, isi sisa width & height
+            "sm:flex-1 sm:min-w-0 sm:aspect-auto sm:shrink",
+          ].join(" ")}
+        >
           <VideoPlayer
             videoUrl={currentVideo.url}
             videoTitle={currentVideo.title}
@@ -338,43 +368,34 @@ function RoomPageInner() {
             onFullscreenChange={handleFullscreenChange}
           />
         </div>
-        {chatVisible && (
-          <div className="w-72 lg:w-80 shrink-0 flex flex-col border-l border-white/10">
-            <VideoCall {...videoCallProps} />
-            <Chat messages={messages} members={members} onSend={sendMessage} connected={connected} />
-          </div>
-        )}
-      </div>
 
-      {/* Mobile */}
-      <div className="sm:hidden flex flex-col flex-1 min-h-0">
-        <div
-          className="w-full shrink-0 relative bg-black"
-          style={{ aspectRatio: "16 / 9" }}
-        >
-          <div className="absolute inset-0">
-            <VideoPlayer
-              videoUrl={currentVideo.url}
-              videoTitle={currentVideo.title}
-              videoState={videoState}
-              isHost={isHostParam}
-              onControl={handleControlVideo}
-              onFullscreenChange={handleFullscreenChange}
+        {/* Chat & VideoCall */}
+        {chatVisible && (
+          <div
+            className={[
+              "flex flex-col min-h-0 overflow-hidden",
+              "border-t border-white/10 bg-gray-900",
+              // Mobile: flex-1 → mengisi sisa ruang setelah video
+              "flex-1",
+              // Desktop: sidebar tetap, border kiri
+              "sm:w-72 lg:w-80 sm:flex-none sm:border-t-0 sm:border-l",
+            ].join(" ")}
+          >
+            <VideoCall {...videoCallProps} />
+            <Chat
+              messages={messages}
+              members={members}
+              onSend={sendMessage}
+              connected={connected}
             />
           </div>
-        </div>
-
-        {chatVisible && (
-          <div className="flex-1 min-h-0 flex flex-col border-t border-white/10 bg-gray-900">
-            <VideoCall {...videoCallProps} />
-            <Chat messages={messages} members={members} onSend={sendMessage} connected={connected} />
-          </div>
         )}
 
+        {/* Tombol chat saat tersembunyi (mobile) */}
         {!chatVisible && (
           <button
             onClick={() => setChatVisible(true)}
-            className="fixed bottom-4 right-4 z-40 bg-purple-600 text-white rounded-full p-3 shadow-lg"
+            className="fixed bottom-4 right-4 z-40 bg-purple-600 text-white rounded-full p-3 shadow-lg sm:hidden"
           >
             <MessageSquare className="w-5 h-5" />
           </button>
