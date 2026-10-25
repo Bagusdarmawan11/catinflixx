@@ -57,16 +57,13 @@ function VideoTile({
 }
 
 // ── FloatingVideoCall — WhatsApp style ──────────────────────────────────────
-// - Video pasangan (peer) sebagai main, besar
-// - Video kamu sebagai PiP kecil di pojok
-// - Tombol swap untuk tukar main/PiP
-// - Draggable & resizable
 function FloatingVideoCall({
   localStream,
   peers,
   camOn,
   micOn,
   userName,
+  isFullscreen,
   onToggleCam,
   onToggleMic,
   onStop,
@@ -76,6 +73,7 @@ function FloatingVideoCall({
   camOn: boolean;
   micOn: boolean;
   userName: string;
+  isFullscreen: boolean;
   onToggleCam: () => void;
   onToggleMic: () => void;
   onStop: () => void;
@@ -88,7 +86,6 @@ function FloatingVideoCall({
   const [panelW, setPanelW] = useState(260);
   const [mainH, setMainH] = useState(180);
   const [minimized, setMinimized] = useState(false);
-  // true = main adalah peer (pasangan), false = main adalah self
   const [mainIsPeer, setMainIsPeer] = useState(true);
 
   const peerList = Array.from(peers.values());
@@ -160,28 +157,36 @@ function FloatingVideoCall({
   const onResizeMove = useCallback((e: React.PointerEvent) => {
     if (!resizeRef.current) return;
     const dx = e.clientX - resizeRef.current.startX;
-    const newW = Math.max(180, Math.min(400, resizeRef.current.startW + dx));
+    const newW = Math.max(180, Math.min(420, resizeRef.current.startW + dx));
     const newH = Math.round(newW * (9 / 16));
     setPanelW(newW);
     setMainH(newH);
   }, []);
   const onResizeUp = useCallback(() => { resizeRef.current = null; }, []);
 
-  // Minimized: hanya tampil badge kecil
+  /*
+   * FIX: z-index saat fullscreen.
+   * VideoPlayer fullscreen pakai z-index:100.
+   * FloatingVideoCall harus selalu di atas: z-index:200 (normal) atau z-index:210 saat fullscreen.
+   * Badge minimize juga z-index:210 saat fullscreen supaya tetap visible.
+   */
+  const zIndex = isFullscreen ? 210 : 200;
+
+  // Minimized: badge lebih besar agar mudah di-tap di mobile
   if (minimized) {
     return (
       <div
         ref={containerRef}
-        style={{ position: "fixed", left: pos.x, top: pos.y, zIndex: 200 }}
-        className="bg-gray-900 border border-white/20 rounded-full px-3 py-2 flex items-center gap-2 shadow-xl cursor-pointer select-none"
+        style={{ position: "fixed", left: pos.x, top: pos.y, zIndex }}
+        className="bg-gray-900 border border-white/20 rounded-2xl px-4 py-2.5 flex items-center gap-2.5 shadow-xl cursor-pointer select-none active:scale-95 transition-transform"
         onPointerDown={onDragDown}
         onPointerMove={onDragMove}
         onPointerUp={onDragUp}
         onClick={() => setMinimized(false)}
       >
-        <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse shrink-0" />
-        <span className="text-xs text-white whitespace-nowrap">Video Call</span>
-        <Maximize2 className="w-3 h-3 text-gray-400 shrink-0" />
+        <div className="w-2.5 h-2.5 bg-green-400 rounded-full animate-pulse shrink-0" />
+        <span className="text-sm text-white whitespace-nowrap font-medium">📹 VC Aktif</span>
+        <Maximize2 className="w-4 h-4 text-gray-400 shrink-0" />
       </div>
     );
   }
@@ -194,91 +199,47 @@ function FloatingVideoCall({
         left: pos.x,
         top: pos.y,
         width: panelW,
-        zIndex: 200,
+        zIndex,
         borderRadius: 16,
-        overflow: "hidden",
+        overflow: "visible", // FIX: "hidden" menyebabkan resize handle terpotong
         boxShadow: "0 8px 40px rgba(0,0,0,0.85)",
         border: "1.5px solid rgba(255,255,255,0.15)",
         background: "#111827",
         userSelect: "none",
       }}
     >
-      {/* Drag handle */}
-      <div
-        className="flex items-center justify-between px-3 py-1.5 bg-gray-900/90 cursor-grab active:cursor-grabbing"
-        onPointerDown={onDragDown}
-        onPointerMove={onDragMove}
-        onPointerUp={onDragUp}
-      >
-        <span className="text-[11px] text-gray-400 select-none">
-          📹 Video Call {peerList.length > 0 ? `· ${peerList.length + 1} orang` : ""}
-        </span>
-        <button
-          onClick={() => setMinimized(true)}
-          className="text-gray-400 hover:text-white p-0.5 transition-colors"
-          title="Minimize"
+      {/* Inner wrapper dengan overflow hidden untuk konten tapi tidak memotong resize */}
+      <div style={{ borderRadius: 16, overflow: "hidden" }}>
+        {/* Drag handle */}
+        <div
+          className="flex items-center justify-between px-3 py-1.5 bg-gray-900/90 cursor-grab active:cursor-grabbing"
+          onPointerDown={onDragDown}
+          onPointerMove={onDragMove}
+          onPointerUp={onDragUp}
         >
-          <Minimize2 className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {/* Main video (pasangan / self tergantung mainIsPeer) */}
-      <div
-        style={{ position: "relative", height: mainH, background: "#000" }}
-      >
-        {mainStream ? (
-          <video
-            ref={mainVideoRef}
-            autoPlay
-            playsInline
-            muted={!mainIsPeer} // mute kalau self
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              display: "block",
-            }}
-          />
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gray-800">
-            <div className="w-14 h-14 rounded-full bg-purple-600 flex items-center justify-center">
-              <span className="text-white text-xl font-bold">
-                {mainName.charAt(0).toUpperCase()}
-              </span>
-            </div>
-            <span className="text-gray-400 text-xs">{mainName}</span>
-            {!mainIsPeer && !camOn && (
-              <span className="text-gray-500 text-[11px]">Kamera mati</span>
-            )}
-          </div>
-        )}
-
-        {/* Label main */}
-        <div className="absolute top-2 left-2 bg-black/50 backdrop-blur-sm rounded-md px-2 py-0.5">
-          <span className="text-white text-[10px]">{mainName}</span>
+          <span className="text-[11px] text-gray-400 select-none">
+            📹 Video Call {peerList.length > 0 ? `· ${peerList.length + 1} orang` : ""}
+          </span>
+          {/* FIX: Tombol minimize lebih besar agar mudah di-tap */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setMinimized(true); }}
+            className="text-gray-400 hover:text-white p-1.5 transition-colors rounded-lg hover:bg-white/10"
+            title="Minimize"
+          >
+            <Minimize2 className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* PiP — video kamu di pojok kanan bawah */}
+        {/* Main video */}
         <div
-          style={{
-            position: "absolute",
-            bottom: 8,
-            right: 8,
-            width: Math.round(panelW * 0.28),
-            height: Math.round(panelW * 0.28 * (9 / 16)),
-            borderRadius: 8,
-            overflow: "hidden",
-            border: "1.5px solid rgba(255,255,255,0.35)",
-            background: "#1f2937",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.6)",
-          }}
+          style={{ position: "relative", height: mainH, background: "#000" }}
         >
-          {pipStream ? (
+          {mainStream ? (
             <video
-              ref={pipVideoRef}
+              ref={mainVideoRef}
               autoPlay
               playsInline
-              muted
+              muted={!mainIsPeer}
               style={{
                 width: "100%",
                 height: "100%",
@@ -287,74 +248,119 @@ function FloatingVideoCall({
               }}
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gray-700">
-              <span className="text-white text-[11px] font-bold">
-                {pipName.charAt(0).toUpperCase()}
-              </span>
+            <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gray-800">
+              <div className="w-14 h-14 rounded-full bg-purple-600 flex items-center justify-center">
+                <span className="text-white text-xl font-bold">
+                  {mainName.charAt(0).toUpperCase()}
+                </span>
+              </div>
+              <span className="text-gray-400 text-xs">{mainName}</span>
+              {!mainIsPeer && !camOn && (
+                <span className="text-gray-500 text-[11px]">Kamera mati</span>
+              )}
             </div>
           )}
+
+          {/* Label main */}
+          <div className="absolute top-2 left-2 bg-black/50 backdrop-blur-sm rounded-md px-2 py-0.5">
+            <span className="text-white text-[10px]">{mainName}</span>
+          </div>
+
+          {/* PiP */}
+          <div
+            style={{
+              position: "absolute",
+              bottom: 8,
+              right: 8,
+              width: Math.round(panelW * 0.28),
+              height: Math.round(panelW * 0.28 * (9 / 16)),
+              borderRadius: 8,
+              overflow: "hidden",
+              border: "1.5px solid rgba(255,255,255,0.35)",
+              background: "#1f2937",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.6)",
+            }}
+          >
+            {pipStream ? (
+              <video
+                ref={pipVideoRef}
+                autoPlay
+                playsInline
+                muted
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  display: "block",
+                }}
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center bg-gray-700">
+                <span className="text-white text-[11px] font-bold">
+                  {pipName.charAt(0).toUpperCase()}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div className="flex items-center justify-center gap-2 py-2 px-3 bg-gray-900/95">
+          <button
+            onClick={() => setMainIsPeer((v) => !v)}
+            className="bg-gray-700 hover:bg-gray-600 text-white rounded-full p-2 transition-colors"
+            title={mainIsPeer ? "Tampilkan videomu sebagai main" : "Tampilkan pasangan sebagai main"}
+          >
+            <ArrowLeftRight className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={onToggleCam}
+            className={`rounded-full p-2 transition-colors text-white ${
+              camOn ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-700"
+            }`}
+            title={camOn ? "Matikan kamera" : "Nyalakan kamera"}
+          >
+            {camOn ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
+          </button>
+
+          <button
+            onClick={onToggleMic}
+            className={`rounded-full p-2 transition-colors text-white ${
+              micOn ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-700"
+            }`}
+            title={micOn ? "Matikan mic" : "Nyalakan mic"}
+          >
+            {micOn ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+          </button>
+
+          <button
+            onClick={onStop}
+            className="bg-red-600 hover:bg-red-700 text-white rounded-full p-2 transition-colors"
+            title="Akhiri video call"
+          >
+            <PhoneOff className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
-      {/* Controls */}
-      <div className="flex items-center justify-center gap-2 py-2 px-3 bg-gray-900/95">
-        {/* Tombol swap: tukar main & PiP */}
-        <button
-          onClick={() => setMainIsPeer((v) => !v)}
-          className="bg-gray-700 hover:bg-gray-600 text-white rounded-full p-2 transition-colors"
-          title={mainIsPeer ? "Tampilkan videomu sebagai main" : "Tampilkan pasangan sebagai main"}
-        >
-          <ArrowLeftRight className="w-3.5 h-3.5" />
-        </button>
-
-        {/* Cam toggle */}
-        <button
-          onClick={onToggleCam}
-          className={`rounded-full p-2 transition-colors text-white ${
-            camOn ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-700"
-          }`}
-          title={camOn ? "Matikan kamera" : "Nyalakan kamera"}
-        >
-          {camOn ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
-        </button>
-
-        {/* Mic toggle */}
-        <button
-          onClick={onToggleMic}
-          className={`rounded-full p-2 transition-colors text-white ${
-            micOn ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-700"
-          }`}
-          title={micOn ? "Matikan mic" : "Nyalakan mic"}
-        >
-          {micOn ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
-        </button>
-
-        {/* End call */}
-        <button
-          onClick={onStop}
-          className="bg-red-600 hover:bg-red-700 text-white rounded-full p-2 transition-colors"
-          title="Akhiri video call"
-        >
-          <PhoneOff className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {/* Resize handle — pojok kanan bawah */}
+      {/* Resize handle — di luar inner wrapper supaya tidak terpotong overflow:hidden */}
       <div
         style={{
           position: "absolute",
-          bottom: 0,
-          right: 0,
-          width: 18,
-          height: 18,
+          bottom: -2,
+          right: -2,
+          width: 22,
+          height: 22,
           cursor: "se-resize",
           zIndex: 1,
+          background: "transparent",
         }}
         onPointerDown={onResizeDown}
         onPointerMove={onResizeMove}
         onPointerUp={onResizeUp}
       >
-        <svg viewBox="0 0 10 10" className="w-full h-full text-gray-500">
+        <svg viewBox="0 0 10 10" className="w-full h-full text-gray-400">
           <path
             d="M9 1L1 9M9 5L5 9"
             stroke="currentColor"
@@ -406,6 +412,7 @@ export default function VideoCall({
         camOn={camOn}
         micOn={micOn}
         userName={userName}
+        isFullscreen={isFullscreen}
         onToggleCam={onToggleCam}
         onToggleMic={onToggleMic}
         onStop={onStop}
@@ -413,8 +420,27 @@ export default function VideoCall({
     );
   }
 
-  // Saat fullscreen tanpa call → tidak tampil apa-apa
-  if (isFullscreen) return null;
+  // Saat fullscreen tanpa call aktif → tampilkan tombol mulai call floating
+  if (isFullscreen) {
+    return (
+      <div
+        style={{
+          position: "fixed",
+          bottom: 20,
+          right: 20,
+          zIndex: 210,
+        }}
+      >
+        <button
+          onClick={onStart}
+          className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-xl transition-colors"
+        >
+          <Video className="w-4 h-4" />
+          Mulai VC
+        </button>
+      </div>
+    );
+  }
 
   // Normal: bar di atas chat
   if (!callActive) {
@@ -435,7 +461,6 @@ export default function VideoCall({
 
   return (
     <div className="bg-gray-900/80 border-b border-white/10 px-3 py-2 space-y-2 shrink-0">
-      {/* Video tiles */}
       <div className="flex gap-2 overflow-x-auto pb-1">
         <VideoTile
           stream={localStream}
@@ -460,7 +485,6 @@ export default function VideoCall({
         )}
       </div>
 
-      {/* Controls */}
       <div className="flex items-center gap-2">
         <button
           onClick={onToggleCam}

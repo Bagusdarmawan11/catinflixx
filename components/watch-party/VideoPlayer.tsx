@@ -58,12 +58,20 @@ export default function VideoPlayer({
 }: Props) {
   const playerRef = useRef<any>(null);
   const [apiReady, setApiReady] = useState(false);
+  const [playerReady, setPlayerReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const syncLockRef = useRef(false);
+
+  // Simpan videoState terbaru di ref supaya onReady bisa akses tanpa stale closure
+  const videoStateRef = useRef(videoState);
+  useEffect(() => {
+    videoStateRef.current = videoState;
+  }, [videoState]);
+
   const videoId = extractYouTubeId(videoUrl);
 
   // Load YouTube IFrame API sekali
@@ -73,7 +81,6 @@ export default function VideoPlayer({
       return;
     }
     if (document.querySelector('script[src*="youtube.com/iframe_api"]')) {
-      // Script sudah ada, tunggu callback
       (window as any).onYouTubeIframeAPIReady = () => setApiReady(true);
       return;
     }
@@ -87,12 +94,13 @@ export default function VideoPlayer({
   useEffect(() => {
     if (!apiReady || !videoId) return;
 
-    // Tunggu DOM ready
+    // Reset playerReady saat videoId berubah
+    setPlayerReady(false);
+
     const timer = setTimeout(() => {
       const el = document.getElementById(YT_PLAYER_ID);
       if (!el) return;
 
-      // Destroy player lama kalau ada
       if (playerRef.current) {
         try { playerRef.current.destroy(); } catch {}
         playerRef.current = null;
@@ -108,13 +116,14 @@ export default function VideoPlayer({
           modestbranding: 1,
           rel: 0,
           disablekb: isHost ? 0 : 1,
-          fs: 0,         // sembunyikan tombol fullscreen bawaan YouTube
+          fs: 0,
           playsinline: 1,
         },
         events: {
           onReady: (e: any) => {
             setDuration(e.target.getDuration() || 0);
-            // Paksa iframe fill container
+
+            // Force iframe fill container
             try {
               const iframe = e.target.getIframe();
               if (iframe) {
@@ -123,6 +132,26 @@ export default function VideoPlayer({
                 iframe.style.display = "block";
               }
             } catch {}
+
+            // ─── FIX UTAMA: apply videoState saat player pertama ready ───
+            // Ini yang menyebabkan YouTube tidak muncul di sisi user:
+            // user menerima video-state-sync sebelum player siap,
+            // jadi sync effect-nya no-op. Sekarang kita apply ulang di sini.
+            if (!isHost) {
+              const state = videoStateRef.current;
+              const serverTime =
+                state.currentTime + (Date.now() - state.updatedAt) / 1000;
+              try {
+                e.target.seekTo(serverTime, true);
+                if (state.isPlaying) {
+                  e.target.playVideo();
+                } else {
+                  e.target.pauseVideo();
+                }
+              } catch {}
+            }
+
+            setPlayerReady(true);
           },
           onStateChange: (e: any) => {
             const YT = (window as any).YT?.PlayerState;
@@ -146,9 +175,9 @@ export default function VideoPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiReady, videoId]);
 
-  // Sync state dari socket (untuk guest)
+  // Sync state dari socket (untuk guest) — hanya aktif setelah player ready
   useEffect(() => {
-    if (!playerRef.current || isHost) return;
+    if (!playerRef.current || isHost || !playerReady) return;
     syncLockRef.current = true;
     const p = playerRef.current;
     const serverTime =
@@ -158,7 +187,7 @@ export default function VideoPlayer({
     if (videoState.isPlaying) p.playVideo?.();
     else p.pauseVideo?.();
     setTimeout(() => { syncLockRef.current = false; }, 500);
-  }, [videoState, isHost]);
+  }, [videoState, isHost, playerReady]);
 
   // Update progress setiap detik
   useEffect(() => {
@@ -177,7 +206,6 @@ export default function VideoPlayer({
     return () => { unlockOrientation(); };
   }, []);
 
-  // Toggle CSS custom fullscreen
   const toggleFullscreen = useCallback(() => {
     setIsFullscreen((prev) => {
       const next = !prev;
@@ -244,12 +272,6 @@ export default function VideoPlayer({
     );
   }
 
-  /*
-   * CSS Custom Fullscreen:
-   * - Saat isFullscreen → position:fixed; inset:0; z-index:100  (cover seluruh layar)
-   * - Saat normal      → h-full w-full flex flex-col              (fill parent via flex/absolute)
-   * - FloatingVideoCall pakai z-index:200, selalu di atas
-   */
   return (
     <div
       className={`flex flex-col bg-black ${isFullscreen ? "" : "h-full w-full"}`}
@@ -265,16 +287,22 @@ export default function VideoPlayer({
     >
       {/* YouTube Player Area */}
       <div className="relative flex-1 bg-black min-h-0 overflow-hidden">
-        {/*
-         * div dengan ID ini yang akan di-replace oleh YouTube iframe.
-         * Setelah onReady, iframe-nya di-force ke width/height 100%.
-         */}
         <div
           id={YT_PLAYER_ID}
           style={{ width: "100%", height: "100%", display: "block" }}
         />
 
-        {/* Tombol fullscreen — pojok kanan bawah */}
+        {/* Overlay "Menghubungkan video..." saat player belum ready (hanya untuk user/guest) */}
+        {!playerReady && !isHost && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10">
+            <div className="text-center">
+              <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+              <p className="text-xs text-gray-400">Menghubungkan video...</p>
+            </div>
+          </div>
+        )}
+
+        {/* Tombol fullscreen */}
         <button
           onClick={toggleFullscreen}
           className="absolute bottom-2 right-2 z-10 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
@@ -287,7 +315,6 @@ export default function VideoPlayer({
           )}
         </button>
 
-        {/* Saat fullscreen: tombol keluar juga di pojok kiri atas */}
         {isFullscreen && (
           <button
             onClick={toggleFullscreen}
@@ -298,7 +325,7 @@ export default function VideoPlayer({
         )}
       </div>
 
-      {/* Custom Controls (disembunyikan saat fullscreen) */}
+      {/* Custom Controls */}
       {!isFullscreen && (
         <div className="bg-gray-950 border-t border-white/10 px-3 sm:px-4 py-2 sm:py-3 space-y-1.5 shrink-0">
           <p className="text-xs sm:text-sm font-medium text-white truncate">

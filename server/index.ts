@@ -12,8 +12,7 @@ const port = parseInt(process.env.PORT || "3000", 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-// ── Persistent room store (survive server restart) ────────────────────────────
-// Simpan ke /tmp/catinflix-rooms.json (Render.com punya ephemeral disk di /tmp)
+// ── Persistent room store ────────────────────────────────────────────────────
 const ROOMS_FILE = path.join("/tmp", "catinflix-rooms.json");
 
 interface PersistedRoom {
@@ -33,7 +32,6 @@ function loadPersistedRooms(): Map<string, PersistedRoom> {
       const arr: PersistedRoom[] = JSON.parse(raw);
       const now = Date.now();
       const map = new Map<string, PersistedRoom>();
-      // Buang room yang sudah lebih dari 24 jam tidak aktif
       arr
         .filter((r) => now - r.lastActiveAt < 24 * 60 * 60 * 1000)
         .forEach((r) => map.set(r.code, r));
@@ -46,7 +44,38 @@ function loadPersistedRooms(): Map<string, PersistedRoom> {
   return new Map();
 }
 
-function savePersistedRooms(map: Map<string, PersistedRoom>) {
+// ── FIX: Throttle savePersistedRooms ─────────────────────────────────────────
+// Sebelumnya dipanggil setiap video-control event (tiap detik saat play).
+// Sekarang di-throttle: minimal 10 detik antar save.
+let saveThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSave = false;
+
+function savePersistedRooms(map: Map<string, PersistedRoom>, immediate = false) {
+  if (immediate) {
+    // Untuk operasi penting (create/delete room), save langsung
+    if (saveThrottleTimer) {
+      clearTimeout(saveThrottleTimer);
+      saveThrottleTimer = null;
+    }
+    pendingSave = false;
+    _doSave(map);
+    return;
+  }
+
+  // Throttle: delay 10 detik, cancel kalau ada save berikutnya
+  pendingSave = true;
+  if (!saveThrottleTimer) {
+    saveThrottleTimer = setTimeout(() => {
+      saveThrottleTimer = null;
+      if (pendingSave) {
+        pendingSave = false;
+        _doSave(map);
+      }
+    }, 10_000);
+  }
+}
+
+function _doSave(map: Map<string, PersistedRoom>) {
   try {
     const arr = Array.from(map.values());
     fs.writeFileSync(ROOMS_FILE, JSON.stringify(arr, null, 2), "utf-8");
@@ -64,16 +93,20 @@ interface RoomMember {
 }
 
 interface RoomRuntime {
-  members: Map<string, RoomMember>; // socketId → member
-  // hostGracePeriod: timer yang berjalan saat host disconnect
-  // room hanya dihapus kalau host tidak reconnect dalam waktu tertentu
+  members: Map<string, RoomMember>;
   hostDisconnectTimer?: ReturnType<typeof setTimeout>;
 }
 
 const persistedRooms = loadPersistedRooms();
-const runtimes = new Map<string, RoomRuntime>(); // roomCode → runtime
+const runtimes = new Map<string, RoomRuntime>();
 
-// Video call participants: roomCode → Map<socketId, info>
+// ── FIX FATAL: Expose persistedRooms ke global supaya API route bisa akses ──
+// API route handlers (Next.js) dan custom server (server/index.ts) berjalan
+// dalam process yang sama saat pakai custom server. Kita expose via global
+// supaya /api/rooms/[code]/route.ts bisa cek room yang dibuat via Socket.IO.
+(global as any).__catinfixRooms = persistedRooms;
+
+// Video call participants
 const vcParticipants = new Map<
   string,
   Map<string, { userId: number; userName: string }>
@@ -111,7 +144,7 @@ function deleteRoom(roomCode: string) {
   persistedRooms.delete(roomCode);
   runtimes.delete(roomCode);
   vcParticipants.delete(roomCode);
-  savePersistedRooms(persistedRooms);
+  savePersistedRooms(persistedRooms, true); // immediate: delete harus langsung disave
   console.log(`[Rooms] Room ${roomCode} deleted`);
 }
 
@@ -150,10 +183,8 @@ app.prepare().then(() => {
       }) => {
         const { roomCode, userId, name, isHost, videoUrl, videoTitle, isReconnect } = data;
 
-        // Buat / restore persisted room
         if (!persistedRooms.has(roomCode)) {
           if (!isHost) {
-            // Room tidak ada dan bukan host — tidak bisa join
             socket.emit("room-error", { message: "Room tidak ditemukan" });
             return;
           }
@@ -166,13 +197,12 @@ app.prepare().then(() => {
             lastActiveAt: Date.now(),
             videoState: { isPlaying: false, currentTime: 0, updatedAt: Date.now() },
           });
-          savePersistedRooms(persistedRooms);
+          savePersistedRooms(persistedRooms, true); // immediate: room baru
         }
 
         const persisted = persistedRooms.get(roomCode)!;
         persisted.lastActiveAt = Date.now();
 
-        // Kalau host reconnect, batalkan timer penghapusan
         const runtime = getOrCreateRuntime(roomCode);
         if (isHost && runtime.hostDisconnectTimer) {
           clearTimeout(runtime.hostDisconnectTimer);
@@ -180,7 +210,6 @@ app.prepare().then(() => {
           console.log(`[Rooms] Host reconnected, grace period cancelled for ${roomCode}`);
         }
 
-        // Hapus socket lama untuk userId yang sama (reconnect/refresh)
         let wasAlreadyInRoom = false;
         runtime.members.forEach((m, sid) => {
           if (m.userId === userId) {
@@ -192,7 +221,6 @@ app.prepare().then(() => {
         runtime.members.set(socket.id, { userId, name, socketId: socket.id, isHost });
         socket.join(roomCode);
 
-        // Kirim state terkini ke user yang join
         socket.emit("video-state-sync", persisted.videoState);
         socket.emit("room-info", {
           videoUrl: persisted.videoUrl,
@@ -212,11 +240,11 @@ app.prepare().then(() => {
       }
     );
 
-    // ── Host end room (sengaja keluar) ─────────────────────────────────────────
+    // ── Host end room ─────────────────────────────────────────────────────────
     socket.on("end-room", (data: { roomCode: string; userId: number }) => {
       const persisted = persistedRooms.get(data.roomCode);
       if (!persisted) return;
-      if (persisted.hostUserId !== data.userId) return; // hanya host
+      if (persisted.hostUserId !== data.userId) return;
 
       systemMsg(io, data.roomCode, "Host telah mengakhiri room");
       io.to(data.roomCode).emit("room-ended");
@@ -239,7 +267,7 @@ app.prepare().then(() => {
           updatedAt: Date.now(),
         };
         persisted.lastActiveAt = Date.now();
-        // Simpan video state ke disk secara throttled
+        // Throttled save — tidak lagi save setiap detik
         savePersistedRooms(persistedRooms);
 
         socket.to(data.roomCode).emit("video-state-sync", persisted.videoState);
@@ -278,7 +306,7 @@ app.prepare().then(() => {
         persisted.videoTitle = data.videoTitle;
         persisted.videoState = { isPlaying: false, currentTime: 0, updatedAt: Date.now() };
         persisted.lastActiveAt = Date.now();
-        savePersistedRooms(persistedRooms);
+        savePersistedRooms(persistedRooms, true); // immediate: ganti video
 
         io.to(data.roomCode).emit("room-info", {
           videoUrl: persisted.videoUrl,
@@ -346,7 +374,6 @@ app.prepare().then(() => {
 
     // ── Disconnect ────────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
-      // Cleanup video call
       vcParticipants.forEach((vcRoom, roomCode) => {
         if (vcRoom.has(socket.id)) {
           vcRoom.delete(socket.id);
@@ -355,7 +382,6 @@ app.prepare().then(() => {
         }
       });
 
-      // Cleanup watch party runtime
       runtimes.forEach((runtime, roomCode) => {
         const member = runtime.members.get(socket.id);
         if (!member) return;
@@ -363,26 +389,20 @@ app.prepare().then(() => {
         runtime.members.delete(socket.id);
 
         if (member.isHost) {
-          // Host disconnect: beri grace period 5 menit untuk reconnect
-          // Room TIDAK langsung dihapus
           console.log(`[Rooms] Host disconnected from ${roomCode}, starting 5min grace period`);
           runtime.hostDisconnectTimer = setTimeout(() => {
-            // Cek apakah host sudah reconnect
             const rt = runtimes.get(roomCode);
             const hostBack = rt
               ? Array.from(rt.members.values()).some((m) => m.isHost)
               : false;
             if (!hostBack) {
-              // Host tidak kembali → hapus room
               systemMsg(io, roomCode, "Host telah meninggalkan room. Room berakhir.");
               io.to(roomCode).emit("room-ended");
               deleteRoom(roomCode);
             }
-          }, 5 * 60 * 1000); // 5 menit
+          }, 5 * 60 * 1000);
         } else {
-          // Guest biasa disconnect: update member list saja
           broadcastMembers(io, roomCode, runtime);
-          // Tidak tampilkan pesan sistem saat disconnect (bisa reconnect)
         }
       });
 
