@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/layout/Navbar";
@@ -19,6 +19,15 @@ export const metadata: Metadata = {
     description: "Platform streaming film dan serial TV terlengkap",
     type: "website",
   },
+};
+
+// Nonaktifkan zoom di semua halaman (termasuk watch party)
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

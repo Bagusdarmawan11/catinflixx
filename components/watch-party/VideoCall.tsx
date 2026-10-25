@@ -8,33 +8,13 @@ import {
   MicOff,
   PhoneOff,
   PhoneCall,
-  Maximize2,
+  ArrowLeftRight,
   Minimize2,
+  Maximize2,
 } from "lucide-react";
 import type { VideoCallPeer } from "@/hooks/useVideoCall";
 
-// ── Helper: lock ke landscape di mobile ──────────────────────────────────────
-async function lockLandscape() {
-  try {
-    const screen = window.screen as any;
-    if (screen.orientation?.lock) {
-      await screen.orientation.lock("landscape");
-    }
-  } catch {
-    // Browser tidak support, tidak apa-apa
-  }
-}
-
-async function unlockOrientation() {
-  try {
-    const screen = window.screen as any;
-    if (screen.orientation?.unlock) {
-      screen.orientation.unlock();
-    }
-  } catch {}
-}
-
-// ── VideoTile ─────────────────────────────────────────────────────────────────
+// ── VideoTile helper ─────────────────────────────────────────────────────────
 function VideoTile({
   stream,
   name,
@@ -47,13 +27,9 @@ function VideoTile({
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
+    if (videoRef.current && stream) videoRef.current.srcObject = stream;
   }, [stream]);
-
   return (
     <div
       className={`relative bg-gray-800 rounded-lg overflow-hidden border border-white/10 ${className}`}
@@ -80,7 +56,11 @@ function VideoTile({
   );
 }
 
-// ── Floating PiP (saat fullscreen) ───────────────────────────────────────────
+// ── FloatingVideoCall — WhatsApp style ──────────────────────────────────────
+// - Video pasangan (peer) sebagai main, besar
+// - Video kamu sebagai PiP kecil di pojok
+// - Tombol swap untuk tukar main/PiP
+// - Draggable & resizable
 function FloatingVideoCall({
   localStream,
   peers,
@@ -101,158 +81,293 @@ function FloatingVideoCall({
   onStop: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x: 16, y: 16 });
-  const [size, setSize] = useState({ w: 160, h: 120 });
-  const [expanded, setExpanded] = useState(false);
-  const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
-  const resizeRef = useRef<{ startX: number; startW: number; startH: number } | null>(null);
+  const mainVideoRef = useRef<HTMLVideoElement>(null);
+  const pipVideoRef = useRef<HTMLVideoElement>(null);
 
-  // Drag handler
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      startPosX: pos.x,
-      startPosY: pos.y,
-    };
-  }, [pos]);
+  const [pos, setPos] = useState({ x: 16, y: 80 });
+  const [panelW, setPanelW] = useState(260);
+  const [mainH, setMainH] = useState(180);
+  const [minimized, setMinimized] = useState(false);
+  // true = main adalah peer (pasangan), false = main adalah self
+  const [mainIsPeer, setMainIsPeer] = useState(true);
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
+  const peerList = Array.from(peers.values());
+  const activePeer = peerList[0] ?? null;
+
+  const mainStream = mainIsPeer ? activePeer?.stream ?? null : localStream;
+  const pipStream = mainIsPeer ? localStream : activePeer?.stream ?? null;
+  const mainName = mainIsPeer ? (activePeer?.name ?? "Pasangan") : `${userName} (Kamu)`;
+  const pipName = mainIsPeer ? `${userName} (Kamu)` : (activePeer?.name ?? "Pasangan");
+
+  // Attach stream ke video element
+  useEffect(() => {
+    if (mainVideoRef.current && mainStream) {
+      mainVideoRef.current.srcObject = mainStream;
+    }
+  }, [mainStream]);
+
+  useEffect(() => {
+    if (pipVideoRef.current && pipStream) {
+      pipVideoRef.current.srcObject = pipStream;
+    }
+  }, [pipStream]);
+
+  // ── Drag ──────────────────────────────────────────────────────────────────
+  const dragRef = useRef<{
+    startX: number; startY: number;
+    startPX: number; startPY: number;
+  } | null>(null);
+
+  const onDragDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      dragRef.current = {
+        startX: e.clientX, startY: e.clientY,
+        startPX: pos.x, startPY: pos.y,
+      };
+    },
+    [pos]
+  );
+  const onDragMove = useCallback((e: React.PointerEvent) => {
     if (!dragRef.current) return;
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-    setPos({
-      x: Math.max(0, dragRef.current.startPosX + dx),
-      y: Math.max(0, dragRef.current.startPosY + dy),
-    });
-  }, []);
+    const x = Math.max(0, Math.min(
+      window.innerWidth - panelW,
+      dragRef.current.startPX + e.clientX - dragRef.current.startX
+    ));
+    const y = Math.max(0, Math.min(
+      window.innerHeight - 100,
+      dragRef.current.startPY + e.clientY - dragRef.current.startY
+    ));
+    setPos({ x, y });
+  }, [panelW]);
+  const onDragUp = useCallback(() => { dragRef.current = null; }, []);
 
-  const onPointerUp = useCallback(() => {
-    dragRef.current = null;
-  }, []);
+  // ── Resize ────────────────────────────────────────────────────────────────
+  const resizeRef = useRef<{
+    startX: number; startW: number; startH: number;
+  } | null>(null);
 
-  // Resize handler
-  const onResizeDown = useCallback((e: React.PointerEvent) => {
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    resizeRef.current = {
-      startX: e.clientX,
-      startW: size.w,
-      startH: size.h,
-    };
-  }, [size]);
-
+  const onResizeDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      resizeRef.current = {
+        startX: e.clientX, startW: panelW, startH: mainH,
+      };
+    },
+    [panelW, mainH]
+  );
   const onResizeMove = useCallback((e: React.PointerEvent) => {
     if (!resizeRef.current) return;
     const dx = e.clientX - resizeRef.current.startX;
-    const newW = Math.max(120, Math.min(400, resizeRef.current.startW + dx));
-    const newH = Math.round(newW * 0.75);
-    setSize({ w: newW, h: newH });
+    const newW = Math.max(180, Math.min(400, resizeRef.current.startW + dx));
+    const newH = Math.round(newW * (9 / 16));
+    setPanelW(newW);
+    setMainH(newH);
   }, []);
+  const onResizeUp = useCallback(() => { resizeRef.current = null; }, []);
 
-  const onResizeUp = useCallback(() => {
-    resizeRef.current = null;
-  }, []);
-
-  const peerList = Array.from(peers.values());
-  const currentW = expanded ? Math.max(size.w, 280) : size.w;
-  const currentH = expanded ? Math.round(currentW * 0.75) : size.h;
+  // Minimized: hanya tampil badge kecil
+  if (minimized) {
+    return (
+      <div
+        ref={containerRef}
+        style={{ position: "fixed", left: pos.x, top: pos.y, zIndex: 200 }}
+        className="bg-gray-900 border border-white/20 rounded-full px-3 py-2 flex items-center gap-2 shadow-xl cursor-pointer select-none"
+        onPointerDown={onDragDown}
+        onPointerMove={onDragMove}
+        onPointerUp={onDragUp}
+        onClick={() => setMinimized(false)}
+      >
+        <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse shrink-0" />
+        <span className="text-xs text-white whitespace-nowrap">Video Call</span>
+        <Maximize2 className="w-3 h-3 text-gray-400 shrink-0" />
+      </div>
+    );
+  }
 
   return (
     <div
       ref={containerRef}
-      className="fixed z-[200] rounded-xl overflow-hidden shadow-2xl border border-white/20 bg-gray-900 select-none"
-      style={{ left: pos.x, top: pos.y, width: currentW, height: "auto" }}
+      style={{
+        position: "fixed",
+        left: pos.x,
+        top: pos.y,
+        width: panelW,
+        zIndex: 200,
+        borderRadius: 16,
+        overflow: "hidden",
+        boxShadow: "0 8px 40px rgba(0,0,0,0.85)",
+        border: "1.5px solid rgba(255,255,255,0.15)",
+        background: "#111827",
+        userSelect: "none",
+      }}
     >
       {/* Drag handle */}
       <div
-        className="cursor-grab active:cursor-grabbing bg-gray-800/80 px-2 py-1 flex items-center gap-1.5"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
+        className="flex items-center justify-between px-3 py-1.5 bg-gray-900/90 cursor-grab active:cursor-grabbing"
+        onPointerDown={onDragDown}
+        onPointerMove={onDragMove}
+        onPointerUp={onDragUp}
       >
-        <span className="text-[10px] text-gray-400 flex-1 truncate">
-          📹 {peerList.length > 0 ? `${peerList.length + 1} di call` : "Video Call"}
+        <span className="text-[11px] text-gray-400 select-none">
+          📹 Video Call {peerList.length > 0 ? `· ${peerList.length + 1} orang` : ""}
         </span>
         <button
-          onClick={() => setExpanded((v) => !v)}
-          className="text-gray-400 hover:text-white p-0.5"
+          onClick={() => setMinimized(true)}
+          className="text-gray-400 hover:text-white p-0.5 transition-colors"
+          title="Minimize"
         >
-          {expanded ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+          <Minimize2 className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {/* Video tiles */}
+      {/* Main video (pasangan / self tergantung mainIsPeer) */}
       <div
-        className="grid gap-1 p-1 bg-gray-900"
-        style={{
-          gridTemplateColumns: peerList.length > 0 ? "1fr 1fr" : "1fr",
-        }}
+        style={{ position: "relative", height: mainH, background: "#000" }}
       >
-        <VideoTile
-          stream={localStream}
-          name={`${userName}`}
-          muted
-          className="aspect-video"
-        />
-        {peerList.map((p) => (
-          <VideoTile
-            key={p.userId}
-            stream={p.stream}
-            name={p.name}
-            className="aspect-video"
+        {mainStream ? (
+          <video
+            ref={mainVideoRef}
+            autoPlay
+            playsInline
+            muted={!mainIsPeer} // mute kalau self
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              display: "block",
+            }}
           />
-        ))}
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gray-800">
+            <div className="w-14 h-14 rounded-full bg-purple-600 flex items-center justify-center">
+              <span className="text-white text-xl font-bold">
+                {mainName.charAt(0).toUpperCase()}
+              </span>
+            </div>
+            <span className="text-gray-400 text-xs">{mainName}</span>
+            {!mainIsPeer && !camOn && (
+              <span className="text-gray-500 text-[11px]">Kamera mati</span>
+            )}
+          </div>
+        )}
+
+        {/* Label main */}
+        <div className="absolute top-2 left-2 bg-black/50 backdrop-blur-sm rounded-md px-2 py-0.5">
+          <span className="text-white text-[10px]">{mainName}</span>
+        </div>
+
+        {/* PiP — video kamu di pojok kanan bawah */}
+        <div
+          style={{
+            position: "absolute",
+            bottom: 8,
+            right: 8,
+            width: Math.round(panelW * 0.28),
+            height: Math.round(panelW * 0.28 * (9 / 16)),
+            borderRadius: 8,
+            overflow: "hidden",
+            border: "1.5px solid rgba(255,255,255,0.35)",
+            background: "#1f2937",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.6)",
+          }}
+        >
+          {pipStream ? (
+            <video
+              ref={pipVideoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                display: "block",
+              }}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gray-700">
+              <span className="text-white text-[11px] font-bold">
+                {pipName.charAt(0).toUpperCase()}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Controls */}
-      <div className="flex items-center gap-1.5 px-2 py-1.5 bg-gray-900/90">
+      <div className="flex items-center justify-center gap-2 py-2 px-3 bg-gray-900/95">
+        {/* Tombol swap: tukar main & PiP */}
+        <button
+          onClick={() => setMainIsPeer((v) => !v)}
+          className="bg-gray-700 hover:bg-gray-600 text-white rounded-full p-2 transition-colors"
+          title={mainIsPeer ? "Tampilkan videomu sebagai main" : "Tampilkan pasangan sebagai main"}
+        >
+          <ArrowLeftRight className="w-3.5 h-3.5" />
+        </button>
+
+        {/* Cam toggle */}
         <button
           onClick={onToggleCam}
-          className={`p-1.5 rounded-lg border text-xs transition-colors ${
-            camOn
-              ? "bg-gray-800 border-white/10 text-gray-300"
-              : "bg-red-600/30 border-red-500/40 text-red-400"
+          className={`rounded-full p-2 transition-colors text-white ${
+            camOn ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-700"
           }`}
+          title={camOn ? "Matikan kamera" : "Nyalakan kamera"}
         >
-          {camOn ? <Video className="w-3 h-3" /> : <VideoOff className="w-3 h-3" />}
+          {camOn ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
         </button>
+
+        {/* Mic toggle */}
         <button
           onClick={onToggleMic}
-          className={`p-1.5 rounded-lg border text-xs transition-colors ${
-            micOn
-              ? "bg-gray-800 border-white/10 text-gray-300"
-              : "bg-red-600/30 border-red-500/40 text-red-400"
+          className={`rounded-full p-2 transition-colors text-white ${
+            micOn ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-700"
           }`}
+          title={micOn ? "Matikan mic" : "Nyalakan mic"}
         >
-          {micOn ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />}
+          {micOn ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
         </button>
+
+        {/* End call */}
         <button
           onClick={onStop}
-          className="ml-auto flex items-center gap-1 bg-red-600 hover:bg-red-700 text-white text-[10px] font-medium px-2 py-1 rounded-lg transition-colors"
+          className="bg-red-600 hover:bg-red-700 text-white rounded-full p-2 transition-colors"
+          title="Akhiri video call"
         >
-          <PhoneOff className="w-3 h-3" />
-          Keluar
+          <PhoneOff className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {/* Resize handle */}
+      {/* Resize handle — pojok kanan bawah */}
       <div
-        className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
+        style={{
+          position: "absolute",
+          bottom: 0,
+          right: 0,
+          width: 18,
+          height: 18,
+          cursor: "se-resize",
+          zIndex: 1,
+        }}
         onPointerDown={onResizeDown}
         onPointerMove={onResizeMove}
         onPointerUp={onResizeUp}
       >
-        <svg viewBox="0 0 10 10" className="w-full h-full text-gray-600">
-          <path d="M9 1L1 9M9 5L5 9M9 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <svg viewBox="0 0 10 10" className="w-full h-full text-gray-500">
+          <path
+            d="M9 1L1 9M9 5L5 9"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
         </svg>
       </div>
     </div>
   );
 }
 
-// ── Komponen utama VideoCall ──────────────────────────────────────────────────
+// ── Komponen utama VideoCall ─────────────────────────────────────────────────
 interface VideoCallProps {
   callActive: boolean;
   localStream: MediaStream | null;
@@ -260,7 +375,7 @@ interface VideoCallProps {
   camOn: boolean;
   micOn: boolean;
   userName: string;
-  isFullscreen: boolean; // dari parent, apakah video player sedang fullscreen
+  isFullscreen: boolean;
   onStart: () => void;
   onStop: () => void;
   onToggleCam: () => void;
@@ -282,16 +397,7 @@ export default function VideoCall({
 }: VideoCallProps) {
   const peerList = Array.from(peers.values());
 
-  // Saat fullscreen aktif → lock landscape
-  useEffect(() => {
-    if (isFullscreen) {
-      lockLandscape();
-    } else {
-      unlockOrientation();
-    }
-  }, [isFullscreen]);
-
-  // Saat fullscreen dan call aktif → render floating PiP
+  // Saat fullscreen + call aktif → FloatingVideoCall WhatsApp style
   if (isFullscreen && callActive) {
     return (
       <FloatingVideoCall
@@ -307,10 +413,10 @@ export default function VideoCall({
     );
   }
 
-  // Saat fullscreen tanpa call → tidak tampil apa-apa (bersih)
+  // Saat fullscreen tanpa call → tidak tampil apa-apa
   if (isFullscreen) return null;
 
-  // Normal (non-fullscreen): bar di atas chat
+  // Normal: bar di atas chat
   if (!callActive) {
     return (
       <div className="flex items-center gap-2 px-3 py-2 bg-gray-900/60 border-b border-white/10 shrink-0">
@@ -329,7 +435,7 @@ export default function VideoCall({
 
   return (
     <div className="bg-gray-900/80 border-b border-white/10 px-3 py-2 space-y-2 shrink-0">
-      {/* Baris tiles video */}
+      {/* Video tiles */}
       <div className="flex gap-2 overflow-x-auto pb-1">
         <VideoTile
           stream={localStream}
@@ -354,7 +460,7 @@ export default function VideoCall({
         )}
       </div>
 
-      {/* Kontrol */}
+      {/* Controls */}
       <div className="flex items-center gap-2">
         <button
           onClick={onToggleCam}
@@ -363,7 +469,6 @@ export default function VideoCall({
               ? "bg-gray-800 border-white/10 text-gray-300 hover:text-white"
               : "bg-red-600/30 border-red-500/40 text-red-400"
           }`}
-          title={camOn ? "Matikan kamera" : "Nyalakan kamera"}
         >
           {camOn ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
         </button>
@@ -374,14 +479,11 @@ export default function VideoCall({
               ? "bg-gray-800 border-white/10 text-gray-300 hover:text-white"
               : "bg-red-600/30 border-red-500/40 text-red-400"
           }`}
-          title={micOn ? "Matikan mic" : "Nyalakan mic"}
         >
           {micOn ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
         </button>
         <span className="text-[10px] text-gray-500 flex-1">
-          {peerList.length > 0
-            ? `${peerList.length + 1} orang di call`
-            : "Hanya kamu di call"}
+          {peerList.length > 0 ? `${peerList.length + 1} orang di call` : "Hanya kamu di call"}
         </span>
         <button
           onClick={onStop}
