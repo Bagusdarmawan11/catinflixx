@@ -9,9 +9,13 @@ export interface VideoCallPeer {
   stream: MediaStream | null;
 }
 
+export interface VcParticipant {
+  socketId: string;
+  userId: number;
+  userName: string;
+}
+
 interface UseVideoCallOptions {
-  // Terima socketRef (MutableRefObject) bukan socket value,
-  // supaya selalu dapat instance terbaru tanpa re-render issue
   socketRef: MutableRefObject<Socket | null>;
   roomCode: string;
   userId: number;
@@ -29,6 +33,8 @@ export function useVideoCall({
   const [peers, setPeers] = useState<Map<string, VideoCallPeer>>(new Map());
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(true);
+  // FIX: daftar user yang sedang di video call (termasuk yang belum start call)
+  const [vcParticipants, setVcParticipants] = useState<VcParticipant[]>([]);
 
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -41,7 +47,6 @@ export function useVideoCall({
     ],
   };
 
-  // Helper: dapatkan socket yang selalu fresh
   const getSocket = useCallback(() => socketRef.current, [socketRef]);
 
   const createPeerConnection = useCallback(
@@ -49,21 +54,18 @@ export function useVideoCall({
       const socket = getSocket();
       if (!socket) return null;
 
-      // Tutup connection lama kalau ada
       if (peerConnectionsRef.current.has(targetSocketId)) {
         peerConnectionsRef.current.get(targetSocketId)?.close();
       }
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
 
-      // Tambahkan local tracks
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, localStreamRef.current!);
         });
       }
 
-      // Terima remote stream
       pc.ontrack = (event) => {
         const remoteStream = event.streams[0];
         setPeers((prev) => {
@@ -77,7 +79,6 @@ export function useVideoCall({
         });
       };
 
-      // Kirim ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           getSocket()?.emit("vc:ice-candidate", {
@@ -115,7 +116,6 @@ export function useVideoCall({
     });
   }
 
-  // Mulai video call
   const startCall = useCallback(async () => {
     const socket = getSocket();
     if (!socket || !socket.connected) {
@@ -130,7 +130,6 @@ export function useVideoCall({
       localStreamRef.current = stream;
       setLocalStream(stream);
       setCallActive(true);
-
       socket.emit("vc:join", { roomCode, userId, userName });
     } catch (err) {
       console.error("[VideoCall] Gagal akses kamera/mic:", err);
@@ -138,21 +137,17 @@ export function useVideoCall({
     }
   }, [getSocket, roomCode, userId, userName]);
 
-  // Stop video call
   const stopCall = useCallback(() => {
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
     setLocalStream(null);
-
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
     setPeers(new Map());
     setCallActive(false);
-
     getSocket()?.emit("vc:leave", { roomCode, userId });
   }, [getSocket, roomCode, userId]);
 
-  // Toggle kamera
   const toggleCam = useCallback(() => {
     if (!localStreamRef.current) return;
     localStreamRef.current.getVideoTracks().forEach((t) => {
@@ -161,7 +156,6 @@ export function useVideoCall({
     setCamOn((prev) => !prev);
   }, []);
 
-  // Toggle mic
   const toggleMic = useCallback(() => {
     if (!localStreamRef.current) return;
     localStreamRef.current.getAudioTracks().forEach((t) => {
@@ -172,27 +166,24 @@ export function useVideoCall({
 
   // Daftarkan socket event listeners
   useEffect(() => {
-    // Polling sampai socket tersedia (max 10 detik)
     let attempts = 0;
     const maxAttempts = 20;
 
     const registerHandlers = () => {
       const socket = getSocket();
       if (!socket) {
-        if (attempts++ < maxAttempts) {
-          setTimeout(registerHandlers, 500);
-        }
+        if (attempts++ < maxAttempts) setTimeout(registerHandlers, 500);
         return;
       }
 
-      // Bersihkan listener lama
       socket.off("vc:user-joined");
       socket.off("vc:offer");
       socket.off("vc:answer");
       socket.off("vc:ice-candidate");
       socket.off("vc:user-left");
+      socket.off("vc:participants-update");
 
-      // Ada user lain join vc → kita kirim offer ke mereka
+      // Ada user lain join vc → kita kirim offer
       socket.on(
         "vc:user-joined",
         async (data: { socketId: string; userId: number; userName: string }) => {
@@ -226,7 +217,6 @@ export function useVideoCall({
         }
       );
 
-      // Terima offer → buat answer
       socket.on(
         "vc:offer",
         async (data: {
@@ -270,7 +260,6 @@ export function useVideoCall({
         }
       );
 
-      // Terima answer
       socket.on(
         "vc:answer",
         async (data: { fromSocketId: string; answer: RTCSessionDescriptionInit }) => {
@@ -285,7 +274,6 @@ export function useVideoCall({
         }
       );
 
-      // Terima ICE candidate
       socket.on(
         "vc:ice-candidate",
         async (data: { fromSocketId: string; candidate: RTCIceCandidateInit }) => {
@@ -300,10 +288,17 @@ export function useVideoCall({
         }
       );
 
-      // User lain keluar dari vc
       socket.on("vc:user-left", (data: { socketId: string }) => {
         removePeer(data.socketId);
       });
+
+      // FIX: Terima update peserta VC dari server
+      socket.on(
+        "vc:participants-update",
+        (data: { participants: VcParticipant[] }) => {
+          setVcParticipants(data.participants);
+        }
+      );
     };
 
     registerHandlers();
@@ -316,12 +311,12 @@ export function useVideoCall({
         socket.off("vc:answer");
         socket.off("vc:ice-candidate");
         socket.off("vc:user-left");
+        socket.off("vc:participants-update");
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomCode, createPeerConnection]);
 
-  // Cleanup saat unmount
   useEffect(() => {
     return () => {
       localStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -335,6 +330,7 @@ export function useVideoCall({
     peers,
     camOn,
     micOn,
+    vcParticipants,
     startCall,
     stopCall,
     toggleCam,

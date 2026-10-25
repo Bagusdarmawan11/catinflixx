@@ -200,7 +200,7 @@ function RoomPageInner() {
     };
   }, [socketRef, router]);
 
-  const { callActive, localStream, peers, camOn, micOn, startCall, stopCall, toggleCam, toggleMic } =
+  const { callActive, localStream, peers, camOn, micOn, vcParticipants, startCall, stopCall, toggleCam, toggleMic } =
     useVideoCall({ socketRef, roomCode, userId: user?.id ?? 0, userName: user?.name ?? "Tamu" });
 
   const handleControlVideo = useCallback((isPlaying: boolean, currentTime: number) => {
@@ -257,6 +257,7 @@ function RoomPageInner() {
     userName: user?.name ?? "Tamu",
     isFullscreen,
     onStart: startCall, onStop: stopCall,
+    vcParticipants,
     onToggleCam: toggleCam, onToggleMic: toggleMic,
   };
 

@@ -44,15 +44,12 @@ function loadPersistedRooms(): Map<string, PersistedRoom> {
   return new Map();
 }
 
-// ── FIX: Throttle savePersistedRooms ─────────────────────────────────────────
-// Sebelumnya dipanggil setiap video-control event (tiap detik saat play).
-// Sekarang di-throttle: minimal 10 detik antar save.
+// ── Throttle savePersistedRooms ─────────────────────────────────────────────
 let saveThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSave = false;
 
 function savePersistedRooms(map: Map<string, PersistedRoom>, immediate = false) {
   if (immediate) {
-    // Untuk operasi penting (create/delete room), save langsung
     if (saveThrottleTimer) {
       clearTimeout(saveThrottleTimer);
       saveThrottleTimer = null;
@@ -61,8 +58,6 @@ function savePersistedRooms(map: Map<string, PersistedRoom>, immediate = false) 
     _doSave(map);
     return;
   }
-
-  // Throttle: delay 10 detik, cancel kalau ada save berikutnya
   pendingSave = true;
   if (!saveThrottleTimer) {
     saveThrottleTimer = setTimeout(() => {
@@ -100,17 +95,28 @@ interface RoomRuntime {
 const persistedRooms = loadPersistedRooms();
 const runtimes = new Map<string, RoomRuntime>();
 
-// ── FIX FATAL: Expose persistedRooms ke global supaya API route bisa akses ──
-// API route handlers (Next.js) dan custom server (server/index.ts) berjalan
-// dalam process yang sama saat pakai custom server. Kita expose via global
-// supaya /api/rooms/[code]/route.ts bisa cek room yang dibuat via Socket.IO.
+// Expose ke global supaya API route bisa akses
 (global as any).__catinfixRooms = persistedRooms;
 
-// Video call participants
+// Video call participants: roomCode → Map<socketId, {userId, userName}>
 const vcParticipants = new Map<
   string,
   Map<string, { userId: number; userName: string }>
 >();
+
+// ── URL filter helper ─────────────────────────────────────────────────────────
+// Deteksi link/URL di pesan chat
+const URL_REGEX =
+  /(?:https?:\/\/|www\.)[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?/gi;
+
+function containsUrl(text: string): boolean {
+  return URL_REGEX.test(text);
+}
+
+// Reset lastIndex setelah test (karena regex stateful dengan /g)
+function resetUrlRegex() {
+  URL_REGEX.lastIndex = 0;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getOrCreateRuntime(roomCode: string): RoomRuntime {
@@ -144,8 +150,21 @@ function deleteRoom(roomCode: string) {
   persistedRooms.delete(roomCode);
   runtimes.delete(roomCode);
   vcParticipants.delete(roomCode);
-  savePersistedRooms(persistedRooms, true); // immediate: delete harus langsung disave
+  savePersistedRooms(persistedRooms, true);
   console.log(`[Rooms] Room ${roomCode} deleted`);
+}
+
+// Broadcast daftar peserta VC ke semua member room
+function broadcastVcParticipants(io: SocketIOServer, roomCode: string) {
+  const vcRoom = vcParticipants.get(roomCode);
+  const participants = vcRoom
+    ? Array.from(vcRoom.entries()).map(([socketId, p]) => ({
+        socketId,
+        userId: p.userId,
+        userName: p.userName,
+      }))
+    : [];
+  io.to(roomCode).emit("vc:participants-update", { participants });
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -197,7 +216,7 @@ app.prepare().then(() => {
             lastActiveAt: Date.now(),
             videoState: { isPlaying: false, currentTime: 0, updatedAt: Date.now() },
           });
-          savePersistedRooms(persistedRooms, true); // immediate: room baru
+          savePersistedRooms(persistedRooms, true);
         }
 
         const persisted = persistedRooms.get(roomCode)!;
@@ -229,6 +248,9 @@ app.prepare().then(() => {
         });
 
         broadcastMembers(io, roomCode, runtime);
+
+        // Kirim info peserta VC ke user yang baru join
+        broadcastVcParticipants(io, roomCode);
 
         if (!wasAlreadyInRoom && !isReconnect) {
           systemMsg(io, roomCode, `${name} bergabung ke room`);
@@ -267,7 +289,6 @@ app.prepare().then(() => {
           updatedAt: Date.now(),
         };
         persisted.lastActiveAt = Date.now();
-        // Throttled save — tidak lagi save setiap detik
         savePersistedRooms(persistedRooms);
 
         socket.to(data.roomCode).emit("video-state-sync", persisted.videoState);
@@ -280,14 +301,28 @@ app.prepare().then(() => {
       (data: { roomCode: string; userId: number; name: string; message: string }) => {
         const { roomCode, userId, name, message } = data;
         if (!message?.trim()) return;
+
+        const trimmed = message.trim().slice(0, 300);
+
+        // FIX: Deteksi URL di pesan → ganti dengan pesan peringatan kebijakan
+        resetUrlRegex();
+        const hasUrl = containsUrl(trimmed);
+        resetUrlRegex();
+
+        const finalMessage = hasUrl
+          ? "⚠️ Hai! Untuk menjaga keamanan dan kenyamanan bersama, kami tidak mengizinkan pengiriman tautan di ruang obrolan ini. Terima kasih atas pengertianmu ya! 😊"
+          : trimmed;
+
         const payload = {
           id: Date.now() + Math.random(),
           userId,
           name,
-          message: message.trim().slice(0, 300),
+          message: finalMessage,
           isSystem: false,
+          isUrlWarning: hasUrl, // flag untuk styling khusus (opsional)
           timestamp: new Date().toISOString(),
         };
+
         io.to(roomCode).emit("chat-message", payload);
       }
     );
@@ -306,7 +341,7 @@ app.prepare().then(() => {
         persisted.videoTitle = data.videoTitle;
         persisted.videoState = { isPlaying: false, currentTime: 0, updatedAt: Date.now() };
         persisted.lastActiveAt = Date.now();
-        savePersistedRooms(persistedRooms, true); // immediate: ganti video
+        savePersistedRooms(persistedRooms, true);
 
         io.to(data.roomCode).emit("room-info", {
           videoUrl: persisted.videoUrl,
@@ -327,11 +362,21 @@ app.prepare().then(() => {
         const { roomCode, userId, userName } = data;
         if (!vcParticipants.has(roomCode)) vcParticipants.set(roomCode, new Map());
         const vcRoom = vcParticipants.get(roomCode)!;
+
+        // Kirim offer ke semua peserta VC yang sudah ada
         vcRoom.forEach((_, existingSocketId) => {
-          io.to(existingSocketId).emit("vc:user-joined", { socketId: socket.id, userId, userName });
+          io.to(existingSocketId).emit("vc:user-joined", {
+            socketId: socket.id,
+            userId,
+            userName,
+          });
         });
+
         vcRoom.set(socket.id, { userId, userName });
-        console.log(`[VC] ${userName} joined vc (${vcRoom.size} total)`);
+        console.log(`[VC] ${userName} joined vc in room ${roomCode} (${vcRoom.size} total)`);
+
+        // Broadcast update peserta VC ke semua member room
+        broadcastVcParticipants(io, roomCode);
       }
     );
 
@@ -352,14 +397,20 @@ app.prepare().then(() => {
     socket.on(
       "vc:answer",
       (data: { roomCode: string; targetSocketId: string; answer: RTCSessionDescriptionInit }) => {
-        io.to(data.targetSocketId).emit("vc:answer", { fromSocketId: socket.id, answer: data.answer });
+        io.to(data.targetSocketId).emit("vc:answer", {
+          fromSocketId: socket.id,
+          answer: data.answer,
+        });
       }
     );
 
     socket.on(
       "vc:ice-candidate",
       (data: { roomCode: string; targetSocketId: string; candidate: RTCIceCandidateInit }) => {
-        io.to(data.targetSocketId).emit("vc:ice-candidate", { fromSocketId: socket.id, candidate: data.candidate });
+        io.to(data.targetSocketId).emit("vc:ice-candidate", {
+          fromSocketId: socket.id,
+          candidate: data.candidate,
+        });
       }
     );
 
@@ -370,15 +421,22 @@ app.prepare().then(() => {
         if (vcRoom.size === 0) vcParticipants.delete(data.roomCode);
       }
       socket.to(data.roomCode).emit("vc:user-left", { socketId: socket.id });
+
+      // Broadcast update peserta VC
+      broadcastVcParticipants(io, data.roomCode);
     });
 
     // ── Disconnect ────────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
+      // Bersihkan dari VC
       vcParticipants.forEach((vcRoom, roomCode) => {
         if (vcRoom.has(socket.id)) {
           vcRoom.delete(socket.id);
           socket.to(roomCode).emit("vc:user-left", { socketId: socket.id });
           if (vcRoom.size === 0) vcParticipants.delete(roomCode);
+
+          // Broadcast update peserta VC
+          broadcastVcParticipants(io, roomCode);
         }
       });
 
