@@ -124,6 +124,18 @@ function RoomPageInner() {
 
   useEffect(() => {
     if (!user) return;
+
+    /*
+     * FIX RACE CONDITION: Host yang MEMBUAT room, bukan join room existing.
+     * Sebelumnya: validateRoom langsung jalan → cek API sebelum socket sempat
+     * emit "create-room" ke server → dapat 404 → "Room Tidak Ditemukan".
+     * Fix: skip validasi untuk host, langsung anggap valid.
+     */
+    if (isHostParam) {
+      setRoomValid(true);
+      return;
+    }
+
     async function validateRoom() {
       try {
         const res = await fetch(`/api/rooms/${roomCode}`);
@@ -137,7 +149,7 @@ function RoomPageInner() {
       }
     }
     validateRoom();
-  }, [roomCode, user]);
+  }, [roomCode, user, isHostParam]);
 
   const {
     socketRef, connected, members, messages,
