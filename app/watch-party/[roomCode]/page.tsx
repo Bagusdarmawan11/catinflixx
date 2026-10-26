@@ -470,15 +470,6 @@ function RoomPageInner() {
           />
         </div>
 
-        {/*
-         * FIX FLOATING VC:
-         * VideoCall dipindah ke LUAR blok {chatVisible && ...} supaya FloatingVC
-         * tidak ikut hilang saat chat disembunyikan.
-         * Prop chatVisible diteruskan ke VideoCall agar sidebar panel VC
-         * (bukan floating window-nya) yang menyesuaikan visibilitasnya.
-         */}
-        <VideoCall {...videoCallProps} chatVisible={chatVisible} />
-
         {/* Chat */}
         {chatVisible && (
           <div
@@ -489,6 +480,8 @@ function RoomPageInner() {
               "sm:w-72 lg:w-80 sm:flex-none sm:border-t-0 sm:border-l",
             ].join(" ")}
           >
+            {/* VC sebagai bar di dalam sidebar chat (bukan kolom tersendiri) */}
+            <VideoCall {...videoCallProps} mode="sidebar" />
             <Chat
               messages={messages}
               members={members}
@@ -508,6 +501,10 @@ function RoomPageInner() {
           </button>
         )}
       </div>
+
+      {/* Floating VC — hanya render saat fullscreen, tidak terpengaruh chatVisible.
+          position:fixed, jadi tidak mempengaruhi layout. */}
+      <VideoCall {...videoCallProps} mode="floating" />
     </div>
   );
 }

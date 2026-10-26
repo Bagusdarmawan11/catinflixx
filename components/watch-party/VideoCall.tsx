@@ -72,12 +72,14 @@ function FloatingVideoCall({
   useEffect(() => {
     if (mainVideoRef.current && mainStream) {
       mainVideoRef.current.srcObject = mainStream;
+      mainVideoRef.current.play().catch(() => {});
     }
   }, [mainStream]);
 
   useEffect(() => {
     if (pipVideoRef.current && pipStream) {
       pipVideoRef.current.srcObject = pipStream;
+      pipVideoRef.current.play().catch(() => {});
     }
   }, [pipStream]);
 
@@ -291,9 +293,10 @@ interface VideoCallProps {
   micOn: boolean;
   userName: string;
   isFullscreen: boolean;
-  // FIX: prop chatVisible — sidebar VC ikut hide saat chat disembunyikan,
-  // tapi FloatingVC (position:fixed) tetap tampil karena render terpisah.
-  chatVisible?: boolean;
+  // FIX: mode "sidebar" = bar VC di dalam kolom chat (di atas daftar chat).
+  //      mode "floating" = jendela VC melayang, hanya saat fullscreen.
+  // Page merender dua instance: satu di dalam kolom chat, satu di luar.
+  mode?: "sidebar" | "floating";
   vcParticipants: VcParticipant[];
   onStart: () => void;
   onStop: () => void;
@@ -309,7 +312,7 @@ export default function VideoCall({
   micOn,
   userName,
   isFullscreen,
-  chatVisible = true,
+  mode = "sidebar",
   vcParticipants,
   onStart,
   onStop,
@@ -317,29 +320,29 @@ export default function VideoCall({
   onToggleMic,
 }: VideoCallProps) {
 
-  // ── Floating saat fullscreen (call aktif) — selalu render di luar sidebar ─
-  // Karena VideoCall kini di luar blok {chatVisible && ...} di page.tsx,
-  // FloatingVC ini akan tetap muncul bahkan saat chat disembunyikan.
-  if (isFullscreen && callActive) {
-    return (
-      <FloatingVideoCall
-        localStream={localStream}
-        peers={peers}
-        camOn={camOn}
-        micOn={micOn}
-        userName={userName}
-        isFullscreen={isFullscreen}
-        onToggleCam={onToggleCam}
-        onToggleMic={onToggleMic}
-        onStop={onStop}
-      />
-    );
-  }
+  // ── Mode floating: hanya render saat fullscreen ───────────────────────────
+  if (mode === "floating") {
+    if (!isFullscreen) return null;
 
-  // ── Saat fullscreen tapi call belum aktif → tombol mulai floating ─────────
-  if (isFullscreen && !callActive) {
+    if (callActive) {
+      return (
+        <FloatingVideoCall
+          localStream={localStream}
+          peers={peers}
+          camOn={camOn}
+          micOn={micOn}
+          userName={userName}
+          isFullscreen={isFullscreen}
+          onToggleCam={onToggleCam}
+          onToggleMic={onToggleMic}
+          onStop={onStop}
+        />
+      );
+    }
+
+    // Fullscreen tapi call belum aktif → tombol mulai (di atas tombol keluar fullscreen)
     return (
-      <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 210 }}>
+      <div style={{ position: "fixed", bottom: 56, right: 12, zIndex: 210 }}>
         <button
           onClick={onStart}
           className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-xl transition-colors"
@@ -351,13 +354,12 @@ export default function VideoCall({
     );
   }
 
-  // ── Sidebar VC: sembunyikan saat chat tidak visible ───────────────────────
-  // FloatingVC sudah di-handle di atas, jadi null di sini aman —
-  // FloatingVC tidak akan hilang karena block ini hanya untuk mode sidebar.
-  if (!chatVisible) return null;
+  // ── Mode sidebar: saat fullscreen, FloatingVC yang tampil ─────────────────
+  if (isFullscreen) return null;
 
   // ── Di luar fullscreen: tampilkan sebagai bar di sidebar ──────────────────
-  const peerList = Array.from(peers.values());
+  const peerEntries = Array.from(peers.entries());
+  const peerList = peerEntries.map(([, p]) => p);
 
   if (!callActive) {
     // Bar saat belum ada call
@@ -394,8 +396,8 @@ export default function VideoCall({
         {/* Tile kamu sendiri */}
         <LocalTile stream={localStream} name={`${userName} (Kamu)`} />
         {/* Tile peers — FIX: pakai nama asli dari peer.name */}
-        {peerList.map((peer) => (
-          <PeerTile key={peer.userId} stream={peer.stream} name={peer.name} />
+        {peerEntries.map(([socketId, peer]) => (
+          <PeerTile key={socketId} stream={peer.stream} name={peer.name} />
         ))}
         {peerList.length === 0 && (
           <div className="flex-shrink-0 w-28 sm:w-32 aspect-video bg-gray-800/60 rounded-lg border border-dashed border-white/20 flex items-center justify-center">
@@ -441,7 +443,7 @@ export default function VideoCall({
 // ── Tile helpers ──────────────────────────────────────────────────────────────
 function LocalTile({ stream, name }: { stream: MediaStream | null; name: string }) {
   const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => { if (ref.current && stream) ref.current.srcObject = stream; }, [stream]);
+  useEffect(() => { if (ref.current && stream) { ref.current.srcObject = stream; ref.current.play().catch(() => {}); } }, [stream]);
   return (
     <div className="flex-shrink-0 w-28 sm:w-32 aspect-video bg-gray-800 rounded-lg overflow-hidden border border-white/10 relative">
       {stream
@@ -459,7 +461,7 @@ function LocalTile({ stream, name }: { stream: MediaStream | null; name: string 
 
 function PeerTile({ stream, name }: { stream: MediaStream | null; name: string }) {
   const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => { if (ref.current && stream) ref.current.srcObject = stream; }, [stream]);
+  useEffect(() => { if (ref.current && stream) { ref.current.srcObject = stream; ref.current.play().catch(() => {}); } }, [stream]);
   return (
     <div className="flex-shrink-0 w-28 sm:w-32 aspect-video bg-gray-800 rounded-lg overflow-hidden border border-white/10 relative">
       {stream

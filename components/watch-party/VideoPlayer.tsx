@@ -296,24 +296,14 @@ export default function VideoPlayer({
         </div>
       )}
 
-      {/* Tombol fullscreen custom */}
-      {isFullscreen ? (
-        <button
-          onClick={toggleFullscreen}
-          className="absolute top-2 left-2 z-20 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
-          title="Keluar fullscreen"
-        >
-          <Minimize className="w-4 h-4" />
-        </button>
-      ) : (
-        <button
-          onClick={toggleFullscreen}
-          className="absolute bottom-2 right-2 z-20 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
-          title="Fullscreen"
-        >
-          <Maximize className="w-4 h-4" />
-        </button>
-      )}
+      {/* Tombol fullscreen custom — masuk & keluar di posisi yang sama (kanan bawah) */}
+      <button
+        onClick={toggleFullscreen}
+        className="absolute bottom-2 right-2 z-20 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
+        title={isFullscreen ? "Keluar fullscreen" : "Fullscreen"}
+      >
+        {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+      </button>
 
       {/* Info host-only hint (saat tidak fullscreen) */}
       {!isFullscreen && !isHost && (

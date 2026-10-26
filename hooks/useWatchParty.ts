@@ -65,8 +65,13 @@ export function useWatchParty({
 
     const socket = io(socketUrl, {
       transports: ["websocket", "polling"],
-      reconnectionAttempts: 5,
-      reconnectionDelay: 2000,
+      // FIX: sebelumnya berhenti reconnect setelah 5x (~10 detik) → koneksi mati
+      // permanen. Sekarang terus mencoba selama halaman terbuka.
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
       query: { userId: String(userId) },
     });
 
