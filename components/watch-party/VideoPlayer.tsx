@@ -12,7 +12,6 @@ interface Props {
   onControl: (isPlaying: boolean, currentTime: number) => void;
   onFullscreenChange?: (isFullscreen: boolean) => void;
   playerId?: string;
-  // FIX: ref ke outer container (page.tsx) agar FloatingVC ikut fullscreen
   fullscreenContainerRef?: React.RefObject<HTMLDivElement>;
 }
 
@@ -22,8 +21,7 @@ function extractYouTubeId(url: string): string | null {
   try {
     const parsed = new URL(url);
     if (parsed.hostname.includes("youtu.be")) return parsed.pathname.slice(1);
-    if (parsed.hostname.includes("youtube.com"))
-      return parsed.searchParams.get("v");
+    if (parsed.hostname.includes("youtube.com")) return parsed.searchParams.get("v");
   } catch {}
   return null;
 }
@@ -47,34 +45,33 @@ export default function VideoPlayer({
   const syncLockRef = useRef(false);
 
   const videoStateRef = useRef(videoState);
-  useEffect(() => {
-    videoStateRef.current = videoState;
-  }, [videoState]);
+  useEffect(() => { videoStateRef.current = videoState; }, [videoState]);
 
   const videoId = extractYouTubeId(videoUrl);
 
-  // ─── FULLSCREEN HELPERS ───────────────────────────────────────────────────
+  // ─── FULLSCREEN ───────────────────────────────────────────────────────────
   /*
-   * FIX FULLSCREEN:
-   * Sebelumnya: requestFullscreen dipanggil pada containerRef (div video saja).
-   * Masalah: FloatingVC ada di luar div itu (di sidebar), jadi tidak ikut
-   * tampil saat fullscreen karena browser hanya render subtree element yg
-   * di-fullscreen.
+   * FIX FULLSCREEN YOUTUBE:
+   * Masalah sebelumnya: YouTube iframe tidak mengisi layar penuh karena
+   * container-nya tidak di-stretch saat fullscreen.
    *
-   * Sekarang: kalau fullscreenContainerRef diberikan dari page.tsx (outer div
-   * seluruh halaman), gunakan itu. Dengan begitu SEMUA children termasuk
-   * FloatingVC (position:fixed) ikut muncul saat fullscreen.
+   * Sekarang:
+   * 1. fullscreenContainerRef (outer div seluruh halaman) di-fullscreen,
+   *    bukan hanya div video — agar FloatingVC ikut muncul.
+   * 2. YouTube iframe diberi style width/height 100% via CSS + attribute.
+   * 3. page.tsx memberi class "w-full h-full" ke area video saat isFullscreen=true,
+   *    sehingga YouTube iframe benar-benar mengisi seluruh layar.
+   * 4. playerVars.fs=1 diaktifkan agar tombol fullscreen native YouTube juga tersedia
+   *    sebagai fallback.
    */
   const enterFullscreen = useCallback(async () => {
     const el = fullscreenContainerRef?.current ?? containerRef.current;
     if (!el) return;
     try {
-      if (el.requestFullscreen) {
-        await el.requestFullscreen();
-      } else if ((el as any).webkitRequestFullscreen) {
-        (el as any).webkitRequestFullscreen();
-      }
+      if (el.requestFullscreen) await el.requestFullscreen();
+      else if ((el as any).webkitRequestFullscreen) (el as any).webkitRequestFullscreen();
     } catch {}
+    // Kunci orientasi landscape di mobile
     setTimeout(async () => {
       try {
         const scr = window.screen as any;
@@ -97,6 +94,7 @@ export default function VideoPlayer({
     } catch {}
   }, []);
 
+  // Deteksi fullscreen keluar dari tombol ESC / swipe native browser
   useEffect(() => {
     const handleFSChange = () => {
       const doc = document as any;
@@ -128,12 +126,8 @@ export default function VideoPlayer({
   }, []);
 
   // ─── YOUTUBE IFRAME API ───────────────────────────────────────────────────
-
   useEffect(() => {
-    if ((window as any).YT?.Player) {
-      setApiReady(true);
-      return;
-    }
+    if ((window as any).YT?.Player) { setApiReady(true); return; }
     if (document.querySelector('script[src*="youtube.com/iframe_api"]')) {
       const prev = (window as any).onYouTubeIframeAPIReady;
       (window as any).onYouTubeIframeAPIReady = () => {
@@ -150,14 +144,12 @@ export default function VideoPlayer({
 
   useEffect(() => {
     if (!apiReady || !videoId) return;
-
     setPlayerReady(false);
     playerReadyRef.current = false;
 
     const timer = setTimeout(() => {
       const el = document.getElementById(playerId);
       if (!el) return;
-
       if (playerRef.current) {
         try { playerRef.current.destroy(); } catch {}
         playerRef.current = null;
@@ -173,25 +165,27 @@ export default function VideoPlayer({
           modestbranding: 1,
           rel: 0,
           disablekb: isHost ? 0 : 1,
-          fs: 0,
+          // FIX: fs=1 agar tombol fullscreen native YouTube tersedia sebagai fallback
+          fs: 1,
           playsinline: 1,
         },
         events: {
           onReady: (e: any) => {
             playerRef.current = e.target;
-
             try {
               const iframe = e.target.getIframe();
               if (iframe) {
+                // FIX: Paksa iframe mengisi 100% width dan height container-nya
                 iframe.style.cssText =
-                  "width:100%!important;height:100%!important;display:block;position:absolute;top:0;left:0;";
+                  "width:100%!important;height:100%!important;display:block;position:absolute;top:0;left:0;border:none;";
+                iframe.setAttribute("width", "100%");
+                iframe.setAttribute("height", "100%");
               }
             } catch {}
 
             if (!isHost) {
               const state = videoStateRef.current;
-              const serverTime =
-                state.currentTime + (Date.now() - state.updatedAt) / 1000;
+              const serverTime = state.currentTime + (Date.now() - state.updatedAt) / 1000;
               try {
                 e.target.seekTo(serverTime, true);
                 if (state.isPlaying) e.target.playVideo();
@@ -206,24 +200,9 @@ export default function VideoPlayer({
             const YT = (window as any).YT?.PlayerState;
             if (!YT) return;
             if (isHost && !syncLockRef.current) {
-              /*
-               * FIX SYNC VIDEO SELESAI:
-               * Sebelumnya: semua state change (termasuk BUFFERING=3) dikirim
-               * sebagai isPlaying=false, yang salah karena buffering bukan pause.
-               *
-               * Sekarang: hanya broadcast untuk state yang relevan:
-               * - PLAYING (1): broadcast play
-               * - PAUSED (2): broadcast pause
-               * - ENDED (0): broadcast pause di akhir video
-               * - UNSTARTED (-1): broadcast pause di waktu 0 (mis. setelah replay)
-               *
-               * BUFFERING (3) dan VIDEO_CUED (5) diabaikan agar tidak salah
-               * kirim pause ke semua guest di tengah buffering.
-               */
               const { PLAYING, PAUSED, ENDED, UNSTARTED } = YT;
               const relevantStates = [PLAYING, PAUSED, ENDED, UNSTARTED];
               if (!relevantStates.includes(e.data)) return;
-
               const playing = e.data === PLAYING;
               const ct = playerRef.current?.getCurrentTime?.() ?? 0;
               onControl(playing, ct);
@@ -242,8 +221,7 @@ export default function VideoPlayer({
     if (!playerRef.current || isHost || !playerReady) return;
     syncLockRef.current = true;
     const p = playerRef.current;
-    const serverTime =
-      videoState.currentTime + (Date.now() - videoState.updatedAt) / 1000;
+    const serverTime = videoState.currentTime + (Date.now() - videoState.updatedAt) / 1000;
     const clientTime = p.getCurrentTime?.() ?? 0;
     if (Math.abs(serverTime - clientTime) > 3) p.seekTo?.(serverTime, true);
     if (videoState.isPlaying) p.playVideo?.();
@@ -275,14 +253,17 @@ export default function VideoPlayer({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="relative bg-black h-full w-full"
-    >
+    <div ref={containerRef} className="relative bg-black h-full w-full">
+      {/* FIX: Container iframe harus absolute inset-0 agar mengisi seluruh parent */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
         <div
           id={playerId}
-          style={{ width: "100%", height: "100%", display: "block", position: "relative" }}
+          style={{
+            width: "100%",
+            height: "100%",
+            display: "block",
+            position: "relative",
+          }}
         />
       </div>
 
@@ -296,7 +277,7 @@ export default function VideoPlayer({
         </div>
       )}
 
-      {/* Tombol fullscreen custom — masuk & keluar di posisi yang sama (kanan bawah) */}
+      {/* Tombol fullscreen — masuk & keluar di pojok kanan bawah */}
       <button
         onClick={toggleFullscreen}
         className="absolute bottom-2 right-2 z-20 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"

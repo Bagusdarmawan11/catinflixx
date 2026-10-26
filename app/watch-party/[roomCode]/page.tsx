@@ -63,7 +63,6 @@ function RoomEndedModal({ onBack }: { onBack: () => void }) {
   );
 }
 
-// FIX: Modal saat user di-kick oleh host
 function KickedModal({ onBack }: { onBack: () => void }) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
@@ -126,14 +125,11 @@ function RoomPageInner() {
   const [roomEnded, setRoomEnded] = useState(false);
   const [showDisconnect, setShowDisconnect] = useState(false);
   const [showReconnected, setShowReconnected] = useState(false);
-  // FIX: panel daftar penonton (untuk host: kick/mute)
   const [showMembersPanel, setShowMembersPanel] = useState(false);
 
   const prevConnectedRef = useRef(true);
   const reconnectedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // FIX: ref ke outer div — digunakan sebagai fullscreen container
-  // agar FloatingVC ikut muncul saat fullscreen
   const outerDivRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -152,23 +148,13 @@ function RoomPageInner() {
 
   useEffect(() => {
     if (!user) return;
-
-    if (isHostParam) {
-      setRoomValid(true);
-      return;
-    }
-
+    if (isHostParam) { setRoomValid(true); return; }
     async function validateRoom() {
       try {
         const res = await fetch(`/api/rooms/${roomCode}`);
-        if (res.status === 503) {
-          setTimeout(validateRoom, 2000);
-          return;
-        }
+        if (res.status === 503) { setTimeout(validateRoom, 2000); return; }
         setRoomValid(res.ok);
-      } catch {
-        setRoomValid(false);
-      }
+      } catch { setRoomValid(false); }
     }
     validateRoom();
   }, [roomCode, user, isHostParam]);
@@ -186,14 +172,10 @@ function RoomPageInner() {
     videoTitle: initialVideoTitle,
   });
 
-  // FIX: Redirect jika user di-kick oleh host
   useEffect(() => {
-    if (wasKicked) {
-      setTimeout(() => router.push("/watch-party"), 3000);
-    }
+    if (wasKicked) { setTimeout(() => router.push("/watch-party"), 3000); }
   }, [wasKicked, router]);
 
-  // Notifikasi disconnect/reconnect
   useEffect(() => {
     if (!connected && prevConnectedRef.current) {
       setShowDisconnect(true);
@@ -210,20 +192,16 @@ function RoomPageInner() {
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket) return;
-
     const handleRoomEnded = () => {
       setRoomEnded(true);
       setTimeout(() => router.push("/watch-party"), 4000);
     };
-
     const handleRoomError = (data: { message: string }) => {
       console.warn("[Room] Error:", data.message);
       setRoomValid(false);
     };
-
     socket.on("room-ended", handleRoomEnded);
     socket.on("room-error", handleRoomError);
-
     return () => {
       socket.off("room-ended", handleRoomEnded);
       socket.off("room-error", handleRoomError);
@@ -239,7 +217,6 @@ function RoomPageInner() {
 
   const handleFullscreenChange = useCallback((fs: boolean) => {
     setIsFullscreen(fs);
-    // FIX: Auto-hide chat saat masuk fullscreen agar tidak mengganggu layar penuh
     if (fs) setChatVisible(false);
   }, []);
 
@@ -263,9 +240,7 @@ function RoomPageInner() {
     router.push("/watch-party");
   }
 
-  function handleRetryConnect() {
-    window.location.reload();
-  }
+  function handleRetryConnect() { window.location.reload(); }
 
   if (authLoading || roomValid === null) {
     return (
@@ -297,12 +272,6 @@ function RoomPageInner() {
   };
 
   return (
-    /*
-     * FIX FULLSCREEN: outerDivRef dipasang di sini (outer wrapper seluruh halaman).
-     * Ref ini diteruskan ke VideoPlayer sebagai fullscreenContainerRef.
-     * Saat fullscreen, outer div ini yang di-fullscreen → FloatingVC (position:fixed)
-     * ikut muncul karena dia descendant dari div ini.
-     */
     <div
       ref={outerDivRef}
       className="bg-gray-950 flex flex-col overflow-hidden relative"
@@ -311,72 +280,66 @@ function RoomPageInner() {
       {showDisconnect && !roomEnded && !wasKicked && (
         <DisconnectBanner onRetry={handleRetryConnect} />
       )}
-      {showReconnected && (
-        <ReconnectedBanner />
-      )}
-      {roomEnded && (
-        <RoomEndedModal onBack={() => router.push("/watch-party")} />
-      )}
-      {/* FIX: Modal kicked */}
-      {wasKicked && (
-        <KickedModal onBack={() => router.push("/watch-party")} />
-      )}
+      {showReconnected && <ReconnectedBanner />}
+      {roomEnded && <RoomEndedModal onBack={() => router.push("/watch-party")} />}
+      {wasKicked && <KickedModal onBack={() => router.push("/watch-party")} />}
 
-      {/* Top Bar */}
-      <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-gray-900 border-b border-white/10 shrink-0">
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-          <button onClick={handleExitRoom} className="text-gray-400 hover:text-white transition-colors shrink-0">
-            <X className="w-5 h-5" />
-          </button>
-          <div className="min-w-0">
-            <h1 className="text-sm font-semibold text-white truncate max-w-[140px] sm:max-w-xs">
-              {currentVideo.title}
-            </h1>
-            <div className="flex items-center gap-1.5">
-              {/* FIX: Klik jumlah penonton → buka panel anggota */}
-              <button
-                onClick={() => setShowMembersPanel((v) => !v)}
-                className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-              >
-                {members.length} penonton · {isHostParam ? "Kamu Host" : "Tamu"}
-              </button>
-              <span
-                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                  connected ? "bg-green-400" : "bg-orange-400 animate-pulse"
-                }`}
-                title={connected ? "Terhubung" : "Terputus"}
-              />
+      {/* FIX: Top Bar — hidden saat fullscreen */}
+      {!isFullscreen && (
+        <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-gray-900 border-b border-white/10 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <button onClick={handleExitRoom} className="text-gray-400 hover:text-white transition-colors shrink-0">
+              <X className="w-5 h-5" />
+            </button>
+            <div className="min-w-0">
+              <h1 className="text-sm font-semibold text-white truncate max-w-[140px] sm:max-w-xs">
+                {currentVideo.title}
+              </h1>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setShowMembersPanel((v) => !v)}
+                  className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                >
+                  {members.length} penonton · {isHostParam ? "Kamu Host" : "Tamu"}
+                </button>
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    connected ? "bg-green-400" : "bg-orange-400 animate-pulse"
+                  }`}
+                  title={connected ? "Terhubung" : "Terputus"}
+                />
+              </div>
             </div>
           </div>
-        </div>
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          <button
-            onClick={copyCode}
-            className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-lg px-2 sm:px-3 py-1.5 transition-colors"
-          >
-            <span className="font-mono text-xs sm:text-sm font-bold text-purple-400 tracking-wider">{roomCode}</span>
-            {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5 text-gray-400" />}
-          </button>
-          {isHostParam && (
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
-              onClick={() => setShowChangeVideo(!showChangeVideo)}
-              className="hidden sm:flex items-center gap-1 text-xs text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg px-3 py-1.5 transition-colors"
+              onClick={copyCode}
+              className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-white/10 rounded-lg px-2 sm:px-3 py-1.5 transition-colors"
             >
-              Ganti Video
-              {showChangeVideo ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              <span className="font-mono text-xs sm:text-sm font-bold text-purple-400 tracking-wider">{roomCode}</span>
+              {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5 text-gray-400" />}
             </button>
-          )}
-          <button
-            onClick={() => setChatVisible(!chatVisible)}
-            className="text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg p-1.5 transition-colors"
-          >
-            {chatVisible ? <MessageSquareOff className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
-          </button>
+            {isHostParam && (
+              <button
+                onClick={() => setShowChangeVideo(!showChangeVideo)}
+                className="hidden sm:flex items-center gap-1 text-xs text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg px-3 py-1.5 transition-colors"
+              >
+                Ganti Video
+                {showChangeVideo ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            )}
+            <button
+              onClick={() => setChatVisible(!chatVisible)}
+              className="text-gray-400 hover:text-white bg-gray-800 border border-white/10 rounded-lg p-1.5 transition-colors"
+            >
+              {chatVisible ? <MessageSquareOff className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* FIX: Panel daftar anggota — host bisa kick & mute */}
-      {showMembersPanel && (
+      {/* Members panel — hidden saat fullscreen */}
+      {showMembersPanel && !isFullscreen && (
         <div className="absolute top-12 left-3 z-40 w-64 bg-gray-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden">
           <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
             <div className="flex items-center gap-2">
@@ -389,10 +352,7 @@ function RoomPageInner() {
           </div>
           <div className="max-h-56 overflow-y-auto py-1">
             {members.map((m) => (
-              <div
-                key={m.userId}
-                className="flex items-center gap-2 px-3 py-2 hover:bg-white/5"
-              >
+              <div key={m.userId} className="flex items-center gap-2 px-3 py-2 hover:bg-white/5">
                 <div className="w-6 h-6 rounded-full bg-purple-700 flex items-center justify-center shrink-0">
                   <span className="text-[10px] text-white font-bold">
                     {m.name.charAt(0).toUpperCase()}
@@ -400,14 +360,9 @@ function RoomPageInner() {
                 </div>
                 <span className="text-xs text-white flex-1 truncate">
                   {m.name}
-                  {m.isHost && (
-                    <span className="ml-1 text-[10px] text-purple-400 font-medium">Host</span>
-                  )}
-                  {m.userId === user?.id && !m.isHost && (
-                    <span className="ml-1 text-[10px] text-gray-500">(Kamu)</span>
-                  )}
+                  {m.isHost && <span className="ml-1 text-[10px] text-purple-400 font-medium">Host</span>}
+                  {m.userId === user?.id && !m.isHost && <span className="ml-1 text-[10px] text-gray-500">(Kamu)</span>}
                 </span>
-                {/* FIX: Tombol kick & mute — hanya untuk host, hanya untuk non-host member */}
                 {isHostParam && !m.isHost && (
                   <div className="flex items-center gap-1 shrink-0">
                     <button
@@ -432,7 +387,8 @@ function RoomPageInner() {
         </div>
       )}
 
-      {showChangeVideo && isHostParam && (
+      {/* Change Video form — hidden saat fullscreen */}
+      {showChangeVideo && isHostParam && !isFullscreen && (
         <form onSubmit={handleChangeVideo} className="flex gap-2 px-4 py-2 bg-gray-900/80 border-b border-white/10 shrink-0">
           <input type="url" value={newUrl} onChange={(e) => setNewUrl(e.target.value)}
             placeholder="URL YouTube baru..."
@@ -448,17 +404,18 @@ function RoomPageInner() {
         </form>
       )}
 
+      {/* Main content */}
       <div className="flex-1 min-h-0 flex flex-col sm:flex-row overflow-hidden">
 
-        {/* Area Video */}
+        {/* Area Video — saat fullscreen, isi seluruh layar */}
         <div
           className={[
             "bg-black relative overflow-hidden",
-            "w-full shrink-0 aspect-video",
-            "sm:flex-1 sm:min-w-0 sm:aspect-auto sm:shrink",
+            isFullscreen
+              ? "w-full h-full"
+              : "w-full shrink-0 aspect-video sm:flex-1 sm:min-w-0 sm:aspect-auto sm:shrink",
           ].join(" ")}
         >
-          {/* FIX: Teruskan outerDivRef → VideoPlayer pakai outer div untuk fullscreen */}
           <VideoPlayer
             videoUrl={currentVideo.url}
             videoTitle={currentVideo.title}
@@ -470,8 +427,8 @@ function RoomPageInner() {
           />
         </div>
 
-        {/* Chat */}
-        {chatVisible && (
+        {/* Chat — hidden saat fullscreen */}
+        {chatVisible && !isFullscreen && (
           <div
             className={[
               "flex flex-col min-h-0 overflow-hidden",
@@ -480,7 +437,6 @@ function RoomPageInner() {
               "sm:w-72 lg:w-80 sm:flex-none sm:border-t-0 sm:border-l",
             ].join(" ")}
           >
-            {/* VC sebagai bar di dalam sidebar chat (bukan kolom tersendiri) */}
             <VideoCall {...videoCallProps} mode="sidebar" />
             <Chat
               messages={messages}
@@ -491,8 +447,8 @@ function RoomPageInner() {
           </div>
         )}
 
-        {/* Tombol chat saat tersembunyi (mobile) */}
-        {!chatVisible && (
+        {/* Tombol chat saat tersembunyi (mobile, non-fullscreen) */}
+        {!chatVisible && !isFullscreen && (
           <button
             onClick={() => setChatVisible(true)}
             className="fixed bottom-4 right-4 z-40 bg-purple-600 text-white rounded-full p-3 shadow-lg sm:hidden"
@@ -502,8 +458,7 @@ function RoomPageInner() {
         )}
       </div>
 
-      {/* Floating VC — hanya render saat fullscreen, tidak terpengaruh chatVisible.
-          position:fixed, jadi tidak mempengaruhi layout. */}
+      {/* Floating VC — hanya saat fullscreen */}
       <VideoCall {...videoCallProps} mode="floating" />
     </div>
   );
