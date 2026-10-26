@@ -173,7 +173,7 @@ export default function VideoPlayer({
           modestbranding: 1,
           rel: 0,
           disablekb: isHost ? 0 : 1,
-          fs: 1,
+          fs: 0,
           playsinline: 1,
         },
         events: {

@@ -291,6 +291,9 @@ interface VideoCallProps {
   micOn: boolean;
   userName: string;
   isFullscreen: boolean;
+  // FIX: prop chatVisible — sidebar VC ikut hide saat chat disembunyikan,
+  // tapi FloatingVC (position:fixed) tetap tampil karena render terpisah.
+  chatVisible?: boolean;
   vcParticipants: VcParticipant[];
   onStart: () => void;
   onStop: () => void;
@@ -306,6 +309,7 @@ export default function VideoCall({
   micOn,
   userName,
   isFullscreen,
+  chatVisible = true,
   vcParticipants,
   onStart,
   onStop,
@@ -313,7 +317,9 @@ export default function VideoCall({
   onToggleMic,
 }: VideoCallProps) {
 
-  // ── FIX: Floating hanya saat fullscreen + call aktif ─────────────────────
+  // ── Floating saat fullscreen (call aktif) — selalu render di luar sidebar ─
+  // Karena VideoCall kini di luar blok {chatVisible && ...} di page.tsx,
+  // FloatingVC ini akan tetap muncul bahkan saat chat disembunyikan.
   if (isFullscreen && callActive) {
     return (
       <FloatingVideoCall
@@ -344,6 +350,11 @@ export default function VideoCall({
       </div>
     );
   }
+
+  // ── Sidebar VC: sembunyikan saat chat tidak visible ───────────────────────
+  // FloatingVC sudah di-handle di atas, jadi null di sini aman —
+  // FloatingVC tidak akan hilang karena block ini hanya untuk mode sidebar.
+  if (!chatVisible) return null;
 
   // ── Di luar fullscreen: tampilkan sebagai bar di sidebar ──────────────────
   const peerList = Array.from(peers.values());

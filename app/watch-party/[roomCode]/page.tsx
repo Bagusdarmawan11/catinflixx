@@ -237,7 +237,11 @@ function RoomPageInner() {
     controlVideo(isPlaying, currentTime);
   }, [controlVideo]);
 
-  const handleFullscreenChange = useCallback((fs: boolean) => setIsFullscreen(fs), []);
+  const handleFullscreenChange = useCallback((fs: boolean) => {
+    setIsFullscreen(fs);
+    // FIX: Auto-hide chat saat masuk fullscreen agar tidak mengganggu layar penuh
+    if (fs) setChatVisible(false);
+  }, []);
 
   function copyCode() {
     const url = `${window.location.origin}/watch-party/${roomCode}`;
@@ -466,7 +470,16 @@ function RoomPageInner() {
           />
         </div>
 
-        {/* Chat & VideoCall */}
+        {/*
+         * FIX FLOATING VC:
+         * VideoCall dipindah ke LUAR blok {chatVisible && ...} supaya FloatingVC
+         * tidak ikut hilang saat chat disembunyikan.
+         * Prop chatVisible diteruskan ke VideoCall agar sidebar panel VC
+         * (bukan floating window-nya) yang menyesuaikan visibilitasnya.
+         */}
+        <VideoCall {...videoCallProps} chatVisible={chatVisible} />
+
+        {/* Chat */}
         {chatVisible && (
           <div
             className={[
@@ -476,7 +489,6 @@ function RoomPageInner() {
               "sm:w-72 lg:w-80 sm:flex-none sm:border-t-0 sm:border-l",
             ].join(" ")}
           >
-            <VideoCall {...videoCallProps} />
             <Chat
               messages={messages}
               members={members}
