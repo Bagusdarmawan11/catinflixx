@@ -33,7 +33,6 @@ export function useVideoCall({
   const [peers, setPeers] = useState<Map<string, VideoCallPeer>>(new Map());
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(true);
-  // FIX: daftar user yang sedang di video call (termasuk yang belum start call)
   const [vcParticipants, setVcParticipants] = useState<VcParticipant[]>([]);
 
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -182,6 +181,7 @@ export function useVideoCall({
       socket.off("vc:ice-candidate");
       socket.off("vc:user-left");
       socket.off("vc:participants-update");
+      socket.off("force-mute"); // FIX: cleanup sebelumnya
 
       // Ada user lain join vc → kita kirim offer
       socket.on(
@@ -292,13 +292,22 @@ export function useVideoCall({
         removePeer(data.socketId);
       });
 
-      // FIX: Terima update peserta VC dari server
       socket.on(
         "vc:participants-update",
         (data: { participants: VcParticipant[] }) => {
           setVcParticipants(data.participants);
         }
       );
+
+      // FIX: Host mute mic user — matikan audio track lokal
+      socket.on("force-mute", () => {
+        if (!localStreamRef.current) return;
+        localStreamRef.current.getAudioTracks().forEach((t) => {
+          t.enabled = false;
+        });
+        setMicOn(false);
+        console.log("[VC] Mic di-mute oleh host");
+      });
     };
 
     registerHandlers();
@@ -312,6 +321,7 @@ export function useVideoCall({
         socket.off("vc:ice-candidate");
         socket.off("vc:user-left");
         socket.off("vc:participants-update");
+        socket.off("force-mute");
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -45,3 +45,16 @@ img {
     background-color: rgba(3, 7, 18, 0.9) !important;
   }
 }
+
+/*
+ * FIX FULLSCREEN: Saat outer page div di-fullscreen, elemen position:fixed
+ * (FloatingVideoCall) harus tetap muncul di atas konten fullscreen.
+ * Browser memperlakukan fullscreen element sebagai viewport baru untuk
+ * position:fixed, jadi kita pastikan overflow visible.
+ */
+:fullscreen {
+  overflow: visible !important;
+}
+:-webkit-full-screen {
+  overflow: visible !important;
+}

@@ -12,6 +12,8 @@ interface Props {
   onControl: (isPlaying: boolean, currentTime: number) => void;
   onFullscreenChange?: (isFullscreen: boolean) => void;
   playerId?: string;
+  // FIX: ref ke outer container (page.tsx) agar FloatingVC ikut fullscreen
+  fullscreenContainerRef?: React.RefObject<HTMLDivElement>;
 }
 
 const DEFAULT_PLAYER_ID = "catinflix-yt-player";
@@ -34,6 +36,7 @@ export default function VideoPlayer({
   onControl,
   onFullscreenChange,
   playerId = DEFAULT_PLAYER_ID,
+  fullscreenContainerRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
@@ -51,9 +54,19 @@ export default function VideoPlayer({
   const videoId = extractYouTubeId(videoUrl);
 
   // ─── FULLSCREEN HELPERS ───────────────────────────────────────────────────
-
+  /*
+   * FIX FULLSCREEN:
+   * Sebelumnya: requestFullscreen dipanggil pada containerRef (div video saja).
+   * Masalah: FloatingVC ada di luar div itu (di sidebar), jadi tidak ikut
+   * tampil saat fullscreen karena browser hanya render subtree element yg
+   * di-fullscreen.
+   *
+   * Sekarang: kalau fullscreenContainerRef diberikan dari page.tsx (outer div
+   * seluruh halaman), gunakan itu. Dengan begitu SEMUA children termasuk
+   * FloatingVC (position:fixed) ikut muncul saat fullscreen.
+   */
   const enterFullscreen = useCallback(async () => {
-    const el = containerRef.current;
+    const el = fullscreenContainerRef?.current ?? containerRef.current;
     if (!el) return;
     try {
       if (el.requestFullscreen) {
@@ -68,7 +81,7 @@ export default function VideoPlayer({
         if (scr.orientation?.lock) await scr.orientation.lock("landscape");
       } catch {}
     }, 100);
-  }, []);
+  }, [fullscreenContainerRef]);
 
   const exitFullscreen = useCallback(async () => {
     try {
@@ -156,11 +169,11 @@ export default function VideoPlayer({
         videoId,
         playerVars: {
           autoplay: 0,
-          controls: 1,        // YouTube native controls aktif
+          controls: 1,
           modestbranding: 1,
           rel: 0,
           disablekb: isHost ? 0 : 1,
-          fs: 1,              // Izinkan fullscreen native YouTube
+          fs: 1,
           playsinline: 1,
         },
         events: {
@@ -193,7 +206,25 @@ export default function VideoPlayer({
             const YT = (window as any).YT?.PlayerState;
             if (!YT) return;
             if (isHost && !syncLockRef.current) {
-              const playing = e.data === YT.PLAYING;
+              /*
+               * FIX SYNC VIDEO SELESAI:
+               * Sebelumnya: semua state change (termasuk BUFFERING=3) dikirim
+               * sebagai isPlaying=false, yang salah karena buffering bukan pause.
+               *
+               * Sekarang: hanya broadcast untuk state yang relevan:
+               * - PLAYING (1): broadcast play
+               * - PAUSED (2): broadcast pause
+               * - ENDED (0): broadcast pause di akhir video
+               * - UNSTARTED (-1): broadcast pause di waktu 0 (mis. setelah replay)
+               *
+               * BUFFERING (3) dan VIDEO_CUED (5) diabaikan agar tidak salah
+               * kirim pause ke semua guest di tengah buffering.
+               */
+              const { PLAYING, PAUSED, ENDED, UNSTARTED } = YT;
+              const relevantStates = [PLAYING, PAUSED, ENDED, UNSTARTED];
+              if (!relevantStates.includes(e.data)) return;
+
+              const playing = e.data === PLAYING;
               const ct = playerRef.current?.getCurrentTime?.() ?? 0;
               onControl(playing, ct);
             }
@@ -219,8 +250,6 @@ export default function VideoPlayer({
     else p.pauseVideo?.();
     setTimeout(() => { syncLockRef.current = false; }, 500);
   }, [videoState, isHost, playerReady]);
-
-  // ─── MUTE TOGGLE (satu-satunya kontrol yang kita sediakan) ────────────────
 
   function toggleMute() {
     if (!playerRef.current) return;
@@ -250,7 +279,6 @@ export default function VideoPlayer({
       ref={containerRef}
       className="relative bg-black h-full w-full"
     >
-      {/* FIX: Player mengisi penuh container, tanpa custom controls di bawah */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
         <div
           id={playerId}
@@ -268,7 +296,7 @@ export default function VideoPlayer({
         </div>
       )}
 
-      {/* Tombol fullscreen custom (kiri atas saat fullscreen, kanan bawah saat normal) */}
+      {/* Tombol fullscreen custom */}
       {isFullscreen ? (
         <button
           onClick={toggleFullscreen}

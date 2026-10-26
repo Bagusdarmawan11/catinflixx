@@ -105,7 +105,6 @@ const vcParticipants = new Map<
 >();
 
 // ── URL filter helper ─────────────────────────────────────────────────────────
-// Deteksi link/URL di pesan chat
 const URL_REGEX =
   /(?:https?:\/\/|www\.)[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?/gi;
 
@@ -113,7 +112,6 @@ function containsUrl(text: string): boolean {
   return URL_REGEX.test(text);
 }
 
-// Reset lastIndex setelah test (karena regex stateful dengan /g)
 function resetUrlRegex() {
   URL_REGEX.lastIndex = 0;
 }
@@ -154,7 +152,6 @@ function deleteRoom(roomCode: string) {
   console.log(`[Rooms] Room ${roomCode} deleted`);
 }
 
-// Broadcast daftar peserta VC ke semua member room
 function broadcastVcParticipants(io: SocketIOServer, roomCode: string) {
   const vcRoom = vcParticipants.get(roomCode);
   const participants = vcRoom
@@ -248,8 +245,6 @@ app.prepare().then(() => {
         });
 
         broadcastMembers(io, roomCode, runtime);
-
-        // Kirim info peserta VC ke user yang baru join
         broadcastVcParticipants(io, roomCode);
 
         if (!wasAlreadyInRoom && !isReconnect) {
@@ -304,7 +299,6 @@ app.prepare().then(() => {
 
         const trimmed = message.trim().slice(0, 300);
 
-        // FIX: Deteksi URL di pesan → ganti dengan pesan peringatan kebijakan
         resetUrlRegex();
         const hasUrl = containsUrl(trimmed);
         resetUrlRegex();
@@ -319,7 +313,7 @@ app.prepare().then(() => {
           name,
           message: finalMessage,
           isSystem: false,
-          isUrlWarning: hasUrl, // flag untuk styling khusus (opsional)
+          isUrlWarning: hasUrl,
           timestamp: new Date().toISOString(),
         };
 
@@ -352,6 +346,72 @@ app.prepare().then(() => {
       }
     );
 
+    // ── FIX: Kick User ────────────────────────────────────────────────────────
+    // Host bisa mengeluarkan user dari room (seperti Google Meet)
+    socket.on("kick-user", (data: { roomCode: string; targetUserId: number }) => {
+      const persisted = persistedRooms.get(data.roomCode);
+      const runtime = runtimes.get(data.roomCode);
+      if (!persisted || !runtime) return;
+
+      // Hanya host yang boleh kick
+      const host = runtime.members.get(socket.id);
+      if (!host?.isHost) return;
+
+      // Cari socket target
+      let targetSocketId: string | null = null;
+      let targetName = "Pengguna";
+      runtime.members.forEach((m, sid) => {
+        if (m.userId === data.targetUserId) {
+          targetSocketId = sid;
+          targetName = m.name;
+        }
+      });
+
+      if (!targetSocketId) return;
+
+      // Beritahu user yang di-kick
+      io.to(targetSocketId).emit("kicked");
+
+      // Hapus dari daftar member
+      runtime.members.delete(targetSocketId);
+      broadcastMembers(io, data.roomCode, runtime);
+
+      // Bersihkan dari VC juga
+      const vcRoom = vcParticipants.get(data.roomCode);
+      if (vcRoom?.has(targetSocketId)) {
+        vcRoom.delete(targetSocketId);
+        socket.to(data.roomCode).emit("vc:user-left", { socketId: targetSocketId });
+        broadcastVcParticipants(io, data.roomCode);
+      }
+
+      systemMsg(io, data.roomCode, `${targetName} telah dikeluarkan dari room oleh host`);
+      console.log(`[Rooms] ${targetName} kicked from ${data.roomCode} by host`);
+    });
+
+    // ── FIX: Mute User Mic ────────────────────────────────────────────────────
+    // Host bisa mute mic user lain (tidak bisa unmute — seperti Google Meet)
+    socket.on("mute-user", (data: { roomCode: string; targetUserId: number }) => {
+      const persisted = persistedRooms.get(data.roomCode);
+      const runtime = runtimes.get(data.roomCode);
+      if (!persisted || !runtime) return;
+
+      // Hanya host yang boleh mute
+      const host = runtime.members.get(socket.id);
+      if (!host?.isHost) return;
+
+      // Cari socket target
+      let targetSocketId: string | null = null;
+      runtime.members.forEach((m, sid) => {
+        if (m.userId === data.targetUserId) targetSocketId = sid;
+      });
+
+      if (!targetSocketId) return;
+
+      // Kirim perintah force-mute ke target
+      io.to(targetSocketId).emit("force-mute");
+      console.log(`[Rooms] User ${data.targetUserId} force-muted in ${data.roomCode}`);
+    });
+
     // ════════════════════════════════════════════════════════════════════════
     // ── WebRTC Signaling ──────────────────────────────────────────────────
     // ════════════════════════════════════════════════════════════════════════
@@ -363,7 +423,6 @@ app.prepare().then(() => {
         if (!vcParticipants.has(roomCode)) vcParticipants.set(roomCode, new Map());
         const vcRoom = vcParticipants.get(roomCode)!;
 
-        // Kirim offer ke semua peserta VC yang sudah ada
         vcRoom.forEach((_, existingSocketId) => {
           io.to(existingSocketId).emit("vc:user-joined", {
             socketId: socket.id,
@@ -375,7 +434,6 @@ app.prepare().then(() => {
         vcRoom.set(socket.id, { userId, userName });
         console.log(`[VC] ${userName} joined vc in room ${roomCode} (${vcRoom.size} total)`);
 
-        // Broadcast update peserta VC ke semua member room
         broadcastVcParticipants(io, roomCode);
       }
     );
@@ -421,21 +479,16 @@ app.prepare().then(() => {
         if (vcRoom.size === 0) vcParticipants.delete(data.roomCode);
       }
       socket.to(data.roomCode).emit("vc:user-left", { socketId: socket.id });
-
-      // Broadcast update peserta VC
       broadcastVcParticipants(io, data.roomCode);
     });
 
     // ── Disconnect ────────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
-      // Bersihkan dari VC
       vcParticipants.forEach((vcRoom, roomCode) => {
         if (vcRoom.has(socket.id)) {
           vcRoom.delete(socket.id);
           socket.to(roomCode).emit("vc:user-left", { socketId: socket.id });
           if (vcRoom.size === 0) vcParticipants.delete(roomCode);
-
-          // Broadcast update peserta VC
           broadcastVcParticipants(io, roomCode);
         }
       });

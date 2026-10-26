@@ -54,6 +54,8 @@ export function useWatchParty({
     url: videoUrl,
     title: videoTitle,
   });
+  // FIX: flag saat user di-kick oleh host
+  const [wasKicked, setWasKicked] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -73,13 +75,6 @@ export function useWatchParty({
     socket.on("connect", () => {
       setConnected(true);
 
-      /*
-       * Fix "bergabung 2x":
-       * Pakai sessionStorage sebagai flag per-sesi.
-       * - Saat pertama kali join dalam sesi browser → isReconnect: false → tampil pesan bergabung
-       * - Saat socket reconnect / React StrictMode re-run / HMR → isReconnect: true → tidak muncul pesan bergabung
-       * sessionStorage tidak persist ke tab baru, tapi persist dalam 1 tab session
-       */
       const joinKey = `cf-joined-${roomCode}-${userId}`;
       const alreadyJoined = sessionStorage.getItem(joinKey);
       const isReconnect = !!alreadyJoined;
@@ -116,6 +111,11 @@ export function useWatchParty({
         setCurrentVideo({ url: info.videoUrl, title: info.videoTitle });
       }
     );
+
+    // FIX: Handle event kicked dari server
+    socket.on("kicked", () => {
+      setWasKicked(true);
+    });
 
     return () => {
       socket.disconnect();
@@ -160,6 +160,24 @@ export function useWatchParty({
     [roomCode, isHost]
   );
 
+  // FIX: Host mengeluarkan user dari room
+  const kickUser = useCallback(
+    (targetUserId: number) => {
+      if (!isHost) return;
+      socketRef.current?.emit("kick-user", { roomCode, targetUserId });
+    },
+    [roomCode, isHost]
+  );
+
+  // FIX: Host mute mic user lain (tidak bisa unmute)
+  const muteUser = useCallback(
+    (targetUserId: number) => {
+      if (!isHost) return;
+      socketRef.current?.emit("mute-user", { roomCode, targetUserId });
+    },
+    [roomCode, isHost]
+  );
+
   return {
     socketRef,
     connected,
@@ -167,8 +185,11 @@ export function useWatchParty({
     messages,
     videoState,
     currentVideo,
+    wasKicked,
     sendMessage,
     controlVideo,
     changeVideo,
+    kickUser,
+    muteUser,
   };
 }
