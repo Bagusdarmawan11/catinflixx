@@ -412,6 +412,30 @@ app.prepare().then(() => {
       console.log(`[Rooms] User ${data.targetUserId} force-muted in ${data.roomCode}`);
     });
 
+    // ── FIX14: Disable Cam User ───────────────────────────────────────────────
+    // Host bisa matikan kamera user lain (user harus nyalakan sendiri)
+    socket.on("disable-cam-user", (data: { roomCode: string; targetUserId: number }) => {
+      const persisted = persistedRooms.get(data.roomCode);
+      const runtime = runtimes.get(data.roomCode);
+      if (!persisted || !runtime) return;
+
+      // Hanya host yang boleh
+      const host = runtime.members.get(socket.id);
+      if (!host?.isHost) return;
+
+      // Cari socket target
+      let targetSocketId: string | null = null;
+      runtime.members.forEach((m, sid) => {
+        if (m.userId === data.targetUserId) targetSocketId = sid;
+      });
+
+      if (!targetSocketId) return;
+
+      // Kirim perintah force-disable-cam ke target
+      io.to(targetSocketId).emit("force-disable-cam");
+      console.log(`[Rooms] User ${data.targetUserId} camera force-disabled in ${data.roomCode}`);
+    });
+
     // ════════════════════════════════════════════════════════════════════════
     // ── WebRTC Signaling ──────────────────────────────────────────────────
     // ════════════════════════════════════════════════════════════════════════

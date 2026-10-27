@@ -22,15 +22,6 @@ interface UseVideoCallOptions {
   userName: string;
 }
 
-/*
- * ICE servers.
- * STUN saja TIDAK cukup kalau dua device ada di jaringan berbeda (mis. satu di
- * WiFi, satu di data seluler) — koneksi gagal lalu terlihat "disconnect".
- * Tambahkan TURN lewat env (di-set sebelum build / deploy):
- *   NEXT_PUBLIC_TURN_URL        contoh: turn:host:80,turn:host:443?transport=tcp
- *   NEXT_PUBLIC_TURN_USERNAME
- *   NEXT_PUBLIC_TURN_CREDENTIAL
- */
 function buildRtcConfig(): RTCConfiguration {
   const iceServers: RTCIceServer[] = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -47,7 +38,7 @@ function buildRtcConfig(): RTCConfiguration {
   return { iceServers, iceCandidatePoolSize: 4 };
 }
 
-const DISCONNECT_GRACE_MS = 10000; // state "disconnected" sering sementara, tunggu dulu
+const DISCONNECT_GRACE_MS = 10000;
 const MAX_REJOIN_ATTEMPTS = 5;
 
 export function useVideoCall({
@@ -71,17 +62,12 @@ export function useVideoCall({
   const rejoinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rejoinAttemptsRef = useRef(0);
 
-  // Identitas terbaru — dipakai di dalam callback supaya tidak stale
   const idRef = useRef({ roomCode, userId, userName });
   idRef.current = { roomCode, userId, userName };
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
   const clearDisconnectTimer = useCallback((socketId: string) => {
     const t = disconnectTimersRef.current.get(socketId);
-    if (t) {
-      clearTimeout(t);
-      disconnectTimersRef.current.delete(socketId);
-    }
+    if (t) { clearTimeout(t); disconnectTimersRef.current.delete(socketId); }
   }, []);
 
   const removePeer = useCallback(
@@ -90,7 +76,6 @@ export function useVideoCall({
       pendingCandidatesRef.current.delete(socketId);
       const pc = pcsRef.current.get(socketId);
       if (pc) {
-        // Lepas handler dulu agar close() tidak memicu logika "failed" lagi
         pc.onconnectionstatechange = null;
         pc.ontrack = null;
         pc.onicecandidate = null;
@@ -112,7 +97,6 @@ export function useVideoCall({
     pendingCandidatesRef.current.clear();
   }, [removePeer]);
 
-  // Keluar-masuk VC ulang untuk membangun koneksi dari nol (dipakai saat koneksi gagal)
   const scheduleRejoin = useCallback(() => {
     if (rejoinTimerRef.current) return;
     if (rejoinAttemptsRef.current >= MAX_REJOIN_ATTEMPTS) return;
@@ -131,8 +115,6 @@ export function useVideoCall({
   const handlePeerFailure = useCallback(
     (socketId: string) => {
       removePeer(socketId);
-      // Hanya salah satu sisi yang rejoin (yang socket id-nya lebih besar)
-      // supaya tidak saling rejoin bersamaan.
       const myId = socketRef.current?.id ?? "";
       if (callActiveRef.current && myId > socketId) scheduleRejoin();
     },
@@ -143,29 +125,19 @@ export function useVideoCall({
     (targetSocketId: string, targetUserId: number, targetName: string) => {
       const socket = socketRef.current;
       if (!socket) return null;
-
-      // Bersihkan koneksi lama untuk socket yang sama (jika ada)
       if (pcsRef.current.has(targetSocketId)) removePeer(targetSocketId);
-
       const pc = new RTCPeerConnection(buildRtcConfig());
-
       localStreamRef.current?.getTracks().forEach((track) => {
         pc.addTrack(track, localStreamRef.current!);
       });
-
       pc.ontrack = (event) => {
         const remoteStream = event.streams[0] ?? new MediaStream([event.track]);
         setPeers((prev) => {
           const next = new Map(prev);
-          next.set(targetSocketId, {
-            userId: targetUserId,
-            name: targetName,
-            stream: remoteStream,
-          });
+          next.set(targetSocketId, { userId: targetUserId, name: targetName, stream: remoteStream });
           return next;
         });
       };
-
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           socketRef.current?.emit("vc:ice-candidate", {
@@ -175,26 +147,19 @@ export function useVideoCall({
           });
         }
       };
-
       pc.onconnectionstatechange = () => {
-        // Abaikan event dari koneksi lama yang sudah diganti
         if (pcsRef.current.get(targetSocketId) !== pc) return;
         const state = pc.connectionState;
-
         if (state === "connected") {
           clearDisconnectTimer(targetSocketId);
           rejoinAttemptsRef.current = 0;
         } else if (state === "disconnected") {
-          // Sering pulih sendiri dalam beberapa detik — jangan langsung buang peer
           clearDisconnectTimer(targetSocketId);
           disconnectTimersRef.current.set(
             targetSocketId,
             setTimeout(() => {
               disconnectTimersRef.current.delete(targetSocketId);
-              if (
-                pcsRef.current.get(targetSocketId) === pc &&
-                pc.connectionState !== "connected"
-              ) {
+              if (pcsRef.current.get(targetSocketId) === pc && pc.connectionState !== "connected") {
                 handlePeerFailure(targetSocketId);
               }
             }, DISCONNECT_GRACE_MS)
@@ -204,14 +169,12 @@ export function useVideoCall({
           handlePeerFailure(targetSocketId);
         }
       };
-
       pcsRef.current.set(targetSocketId, pc);
       return pc;
     },
     [socketRef, removePeer, clearDisconnectTimer, handlePeerFailure]
   );
 
-  // ICE candidate bisa datang sebelum remote description siap → antrekan dulu
   const flushCandidates = useCallback(async (socketId: string, pc: RTCPeerConnection) => {
     const queue = pendingCandidatesRef.current.get(socketId);
     pendingCandidatesRef.current.delete(socketId);
@@ -223,7 +186,6 @@ export function useVideoCall({
     }
   }, []);
 
-  // ── Aksi dari UI ───────────────────────────────────────────────────────────
   const startCall = useCallback(async () => {
     if (callActiveRef.current) return;
     const socket = socketRef.current;
@@ -231,16 +193,10 @@ export function useVideoCall({
       alert("Belum terhubung ke server. Coba beberapa detik lagi.");
       return;
     }
-
     let stream: MediaStream | null = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 640 },
-          height: { ideal: 360 },
-          frameRate: { ideal: 24, max: 30 },
-        },
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 30 } },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       setCamOn(true);
@@ -255,7 +211,6 @@ export function useVideoCall({
         return;
       }
     }
-
     localStreamRef.current = stream;
     callActiveRef.current = true;
     rejoinAttemptsRef.current = 0;
@@ -271,10 +226,7 @@ export function useVideoCall({
 
   const stopCall = useCallback(() => {
     callActiveRef.current = false;
-    if (rejoinTimerRef.current) {
-      clearTimeout(rejoinTimerRef.current);
-      rejoinTimerRef.current = null;
-    }
+    if (rejoinTimerRef.current) { clearTimeout(rejoinTimerRef.current); rejoinTimerRef.current = null; }
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
     setLocalStream(null);
@@ -300,7 +252,6 @@ export function useVideoCall({
     setMicOn((prev) => !prev);
   }, []);
 
-  // ── Socket event listeners ─────────────────────────────────────────────────
   useEffect(() => {
     if (!userId) return;
 
@@ -309,19 +260,16 @@ export function useVideoCall({
     let reJoinTimer: ReturnType<typeof setTimeout> | null = null;
     let attached: Socket | null = null;
 
-    // Ada user lain join VC → kita yang kirim offer
     const onUserJoined = async (data: { socketId: string; userId: number; userName: string }) => {
       if (!localStreamRef.current || data.socketId === attached?.id) return;
       const pc = createPeerConnection(data.socketId, data.userId, data.userName);
       if (!pc) return;
-
       setPeers((prev) => {
         if (prev.has(data.socketId)) return prev;
         const next = new Map(prev);
         next.set(data.socketId, { userId: data.userId, name: data.userName, stream: null });
         return next;
       });
-
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -330,40 +278,31 @@ export function useVideoCall({
           targetSocketId: data.socketId,
           offer: pc.localDescription ?? offer,
         });
-      } catch (e) {
-        console.error("[VC] Error creating offer:", e);
-      }
+      } catch (e) { console.error("[VC] Error creating offer:", e); }
     };
 
     const onOffer = async (data: {
-      fromSocketId: string;
-      fromUserId: number;
-      fromUserName: string;
+      fromSocketId: string; fromUserId: number; fromUserName: string;
       offer: RTCSessionDescriptionInit;
     }) => {
       if (!localStreamRef.current) return;
       const fromId = data.fromSocketId;
       let pc = pcsRef.current.get(fromId) ?? null;
-
-      // Glare: dua sisi sama-sama kirim offer. Yang socket id-nya lebih kecil mengalah.
       if (pc && pc.signalingState !== "stable") {
         const polite = (attached?.id ?? "") < fromId;
-        if (!polite) return; // offer kita yang dipakai, abaikan offer ini
+        if (!polite) return;
         try { await pc.setLocalDescription({ type: "rollback" }); } catch {}
       }
-
       if (!pc || pc.connectionState === "closed" || pc.connectionState === "failed") {
         pc = createPeerConnection(fromId, data.fromUserId, data.fromUserName);
       }
       if (!pc) return;
-
       setPeers((prev) => {
         if (prev.has(fromId)) return prev;
         const next = new Map(prev);
         next.set(fromId, { userId: data.fromUserId, name: data.fromUserName, stream: null });
         return next;
       });
-
       try {
         await pc.setRemoteDescription(data.offer);
         await flushCandidates(fromId, pc);
@@ -374,9 +313,7 @@ export function useVideoCall({
           targetSocketId: fromId,
           answer: pc.localDescription ?? answer,
         });
-      } catch (e) {
-        console.error("[VC] Error creating answer:", e);
-      }
+      } catch (e) { console.error("[VC] Error creating answer:", e); }
     };
 
     const onAnswer = async (data: { fromSocketId: string; answer: RTCSessionDescriptionInit }) => {
@@ -385,9 +322,7 @@ export function useVideoCall({
       try {
         await pc.setRemoteDescription(data.answer);
         await flushCandidates(data.fromSocketId, pc);
-      } catch (e) {
-        console.error("[VC] Error setting answer:", e);
-      }
+      } catch (e) { console.error("[VC] Error setting answer:", e); }
     };
 
     const onIceCandidate = async (data: { fromSocketId: string; candidate: RTCIceCandidateInit }) => {
@@ -398,9 +333,7 @@ export function useVideoCall({
         pendingCandidatesRef.current.set(data.fromSocketId, q);
         return;
       }
-      try {
-        await pc.addIceCandidate(data.candidate);
-      } catch (e) {
+      try { await pc.addIceCandidate(data.candidate); } catch (e) {
         console.warn("[VC] Error adding ICE candidate:", e);
       }
     };
@@ -411,19 +344,22 @@ export function useVideoCall({
       setVcParticipants(data.participants);
     };
 
-    // Host mute mic user — matikan audio track lokal
+    // Host mute mic user
     const onForceMute = () => {
       localStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = false; });
       setMicOn(false);
     };
 
-    // Socket sempat putus lalu connect lagi → socket id baru, signaling lama tidak berlaku.
-    // Kalau kita sedang di VC, bangun ulang dengan join lagi.
+    // FIX14: Host matikan kamera user (user harus nyalakan sendiri)
+    const onForceDisableCam = () => {
+      localStreamRef.current?.getVideoTracks().forEach((t) => { t.enabled = false; });
+      setCamOn(false);
+    };
+
     const onSocketConnect = () => {
       if (!callActiveRef.current || !localStreamRef.current) return;
       removeAllPeers();
       if (reJoinTimer) clearTimeout(reJoinTimer);
-      // Beri waktu useWatchParty selesai emit "join-room" lebih dulu
       reJoinTimer = setTimeout(() => {
         if (!callActiveRef.current || !attached?.connected) return;
         attached.emit("vc:join", {
@@ -437,10 +373,7 @@ export function useVideoCall({
     const attach = () => {
       if (cancelled) return;
       const socket = socketRef.current;
-      if (!socket) {
-        pollTimer = setTimeout(attach, 400);
-        return;
-      }
+      if (!socket) { pollTimer = setTimeout(attach, 400); return; }
       attached = socket;
       socket.on("vc:user-joined", onUserJoined);
       socket.on("vc:offer", onOffer);
@@ -449,8 +382,7 @@ export function useVideoCall({
       socket.on("vc:user-left", onUserLeft);
       socket.on("vc:participants-update", onParticipantsUpdate);
       socket.on("force-mute", onForceMute);
-      // PENTING: pakai handler bernama — jangan socket.off("connect") tanpa handler,
-      // itu akan menghapus listener "connect" milik useWatchParty.
+      socket.on("force-disable-cam", onForceDisableCam); // FIX14
       socket.on("connect", onSocketConnect);
     };
     attach();
@@ -467,12 +399,12 @@ export function useVideoCall({
         attached.off("vc:user-left", onUserLeft);
         attached.off("vc:participants-update", onParticipantsUpdate);
         attached.off("force-mute", onForceMute);
+        attached.off("force-disable-cam", onForceDisableCam); // FIX14
         attached.off("connect", onSocketConnect);
       }
     };
   }, [userId, roomCode, socketRef, createPeerConnection, flushCandidates, removePeer, removeAllPeers]);
 
-  // Cleanup saat unmount
   useEffect(() => {
     return () => {
       callActiveRef.current = false;
@@ -489,15 +421,7 @@ export function useVideoCall({
   }, []);
 
   return {
-    callActive,
-    localStream,
-    peers,
-    camOn,
-    micOn,
-    vcParticipants,
-    startCall,
-    stopCall,
-    toggleCam,
-    toggleMic,
+    callActive, localStream, peers, camOn, micOn, vcParticipants,
+    startCall, stopCall, toggleCam, toggleMic,
   };
 }

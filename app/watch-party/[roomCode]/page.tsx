@@ -5,7 +5,7 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import {
   Share2, X, Check, ChevronDown, ChevronUp,
   MessageSquare, MessageSquareOff, WifiOff, Wifi,
-  Users, UserX, MicOff,
+  Users, UserX, MicOff, VideoOff,
 } from "lucide-react";
 import VideoPlayer from "@/components/watch-party/VideoPlayer";
 import Chat from "@/components/watch-party/Chat";
@@ -162,7 +162,7 @@ function RoomPageInner() {
   const {
     socketRef, connected, members, messages,
     videoState, currentVideo, sendMessage, controlVideo, changeVideo,
-    wasKicked, kickUser, muteUser,
+    wasKicked, kickUser, muteUser, disableCamUser,
   } = useWatchParty({
     roomCode,
     userId: user?.id ?? 0,
@@ -371,6 +371,13 @@ function RoomPageInner() {
                       title={`Mute mic ${m.name}`}
                     >
                       <MicOff className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => disableCamUser(m.userId)}
+                      className="p-1 rounded text-gray-500 hover:text-yellow-400 hover:bg-yellow-400/10 transition-colors"
+                      title={`Matikan kamera ${m.name}`}
+                    >
+                      <VideoOff className="w-3 h-3" />
                     </button>
                     <button
                       onClick={() => kickUser(m.userId)}

@@ -54,7 +54,6 @@ export function useWatchParty({
     url: videoUrl,
     title: videoTitle,
   });
-  // FIX: flag saat user di-kick oleh host
   const [wasKicked, setWasKicked] = useState(false);
 
   useEffect(() => {
@@ -65,8 +64,6 @@ export function useWatchParty({
 
     const socket = io(socketUrl, {
       transports: ["websocket", "polling"],
-      // FIX: sebelumnya berhenti reconnect setelah 5x (~10 detik) → koneksi mati
-      // permanen. Sekarang terus mencoba selama halaman terbuka.
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
@@ -117,7 +114,6 @@ export function useWatchParty({
       }
     );
 
-    // FIX: Handle event kicked dari server
     socket.on("kicked", () => {
       setWasKicked(true);
     });
@@ -165,7 +161,6 @@ export function useWatchParty({
     [roomCode, isHost]
   );
 
-  // FIX: Host mengeluarkan user dari room
   const kickUser = useCallback(
     (targetUserId: number) => {
       if (!isHost) return;
@@ -174,11 +169,19 @@ export function useWatchParty({
     [roomCode, isHost]
   );
 
-  // FIX: Host mute mic user lain (tidak bisa unmute)
   const muteUser = useCallback(
     (targetUserId: number) => {
       if (!isHost) return;
       socketRef.current?.emit("mute-user", { roomCode, targetUserId });
+    },
+    [roomCode, isHost]
+  );
+
+  // FIX14: Host matikan kamera user (user harus nyalakan sendiri)
+  const disableCamUser = useCallback(
+    (targetUserId: number) => {
+      if (!isHost) return;
+      socketRef.current?.emit("disable-cam-user", { roomCode, targetUserId });
     },
     [roomCode, isHost]
   );
@@ -196,5 +199,6 @@ export function useWatchParty({
     changeVideo,
     kickUser,
     muteUser,
+    disableCamUser,
   };
 }
