@@ -54,6 +54,10 @@ export function useVideoCall({
   const [micOn, setMicOn] = useState(true);
   const [vcParticipants, setVcParticipants] = useState<VcParticipant[]>([]);
 
+  // FIX15: Pisahkan state "dimatikan host" dari state mic/cam biasa
+  const [mutedByHost, setMutedByHost] = useState(false);
+  const [camDisabledByHost, setCamDisabledByHost] = useState(false);
+
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const disconnectTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -214,6 +218,9 @@ export function useVideoCall({
     localStreamRef.current = stream;
     callActiveRef.current = true;
     rejoinAttemptsRef.current = 0;
+    // FIX15: Reset flag "dimatikan host" saat mulai call baru
+    setMutedByHost(false);
+    setCamDisabledByHost(false);
     setMicOn(true);
     setLocalStream(stream);
     setCallActive(true);
@@ -232,6 +239,9 @@ export function useVideoCall({
     setLocalStream(null);
     removeAllPeers();
     setCallActive(false);
+    // FIX15: Reset flag saat stop
+    setMutedByHost(false);
+    setCamDisabledByHost(false);
     socketRef.current?.emit("vc:leave", {
       roomCode: idRef.current.roomCode,
       userId: idRef.current.userId,
@@ -243,6 +253,8 @@ export function useVideoCall({
     if (tracks.length === 0) return;
     tracks.forEach((t) => { t.enabled = !t.enabled; });
     setCamOn((prev) => !prev);
+    // FIX15: Kalau user nyalakan sendiri, clear flag "dimatikan host"
+    setCamDisabledByHost(false);
   }, []);
 
   const toggleMic = useCallback(() => {
@@ -250,6 +262,8 @@ export function useVideoCall({
     if (tracks.length === 0) return;
     tracks.forEach((t) => { t.enabled = !t.enabled; });
     setMicOn((prev) => !prev);
+    // FIX15: Kalau user nyalakan sendiri, clear flag "dimatikan host"
+    setMutedByHost(false);
   }, []);
 
   useEffect(() => {
@@ -344,16 +358,20 @@ export function useVideoCall({
       setVcParticipants(data.participants);
     };
 
-    // Host mute mic user
+    // FIX15: force-mute hanya berlaku saat call aktif
     const onForceMute = () => {
+      if (!callActiveRef.current) return;
       localStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = false; });
       setMicOn(false);
+      setMutedByHost(true);
     };
 
-    // FIX14: Host matikan kamera user (user harus nyalakan sendiri)
+    // FIX15: force-disable-cam hanya berlaku saat call aktif
     const onForceDisableCam = () => {
+      if (!callActiveRef.current) return;
       localStreamRef.current?.getVideoTracks().forEach((t) => { t.enabled = false; });
       setCamOn(false);
+      setCamDisabledByHost(true);
     };
 
     const onSocketConnect = () => {
@@ -382,7 +400,7 @@ export function useVideoCall({
       socket.on("vc:user-left", onUserLeft);
       socket.on("vc:participants-update", onParticipantsUpdate);
       socket.on("force-mute", onForceMute);
-      socket.on("force-disable-cam", onForceDisableCam); // FIX14
+      socket.on("force-disable-cam", onForceDisableCam);
       socket.on("connect", onSocketConnect);
     };
     attach();
@@ -399,7 +417,7 @@ export function useVideoCall({
         attached.off("vc:user-left", onUserLeft);
         attached.off("vc:participants-update", onParticipantsUpdate);
         attached.off("force-mute", onForceMute);
-        attached.off("force-disable-cam", onForceDisableCam); // FIX14
+        attached.off("force-disable-cam", onForceDisableCam);
         attached.off("connect", onSocketConnect);
       }
     };
@@ -421,7 +439,9 @@ export function useVideoCall({
   }, []);
 
   return {
-    callActive, localStream, peers, camOn, micOn, vcParticipants,
+    callActive, localStream, peers, camOn, micOn,
+    mutedByHost, camDisabledByHost,
+    vcParticipants,
     startCall, stopCall, toggleCam, toggleMic,
   };
 }

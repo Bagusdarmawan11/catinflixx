@@ -208,7 +208,7 @@ function RoomPageInner() {
     };
   }, [socketRef, router]);
 
-  const { callActive, localStream, peers, camOn, micOn, vcParticipants, startCall, stopCall, toggleCam, toggleMic } =
+  const { callActive, localStream, peers, camOn, micOn, mutedByHost, camDisabledByHost, vcParticipants, startCall, stopCall, toggleCam, toggleMic } =
     useVideoCall({ socketRef, roomCode, userId: user?.id ?? 0, userName: user?.name ?? "Tamu" });
 
   const handleControlVideo = useCallback((isPlaying: boolean, currentTime: number) => {
@@ -264,6 +264,7 @@ function RoomPageInner() {
 
   const videoCallProps = {
     callActive, localStream, peers, camOn, micOn,
+    mutedByHost, camDisabledByHost,
     userName: user?.name ?? "Tamu",
     isFullscreen,
     onStart: startCall, onStop: stopCall,
@@ -298,9 +299,15 @@ function RoomPageInner() {
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => setShowMembersPanel((v) => !v)}
-                  className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                  className={`flex items-center gap-1 text-xs transition-colors ${
+                    isHostParam
+                      ? "bg-purple-600/20 border border-purple-500/30 text-purple-300 hover:bg-purple-600/40 px-2 py-0.5 rounded-lg"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
                 >
-                  {members.length} penonton · {isHostParam ? "Kamu Host" : "Tamu"}
+                  <Users className="w-3 h-3" />
+                  {members.length}
+                  {isHostParam && <span className="text-[10px] ml-0.5">Kelola</span>}
                 </button>
                 <span
                   className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -364,27 +371,27 @@ function RoomPageInner() {
                   {m.userId === user?.id && !m.isHost && <span className="ml-1 text-[10px] text-gray-500">(Kamu)</span>}
                 </span>
                 {isHostParam && !m.isHost && (
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-0.5 shrink-0">
                     <button
                       onClick={() => muteUser(m.userId)}
-                      className="p-1 rounded text-gray-500 hover:text-orange-400 hover:bg-orange-400/10 transition-colors"
-                      title={`Mute mic ${m.name}`}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-orange-300 hover:bg-orange-400/15 transition-colors"
+                      title="Matikan mic"
                     >
-                      <MicOff className="w-3 h-3" />
+                      <MicOff className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => disableCamUser(m.userId)}
-                      className="p-1 rounded text-gray-500 hover:text-yellow-400 hover:bg-yellow-400/10 transition-colors"
-                      title={`Matikan kamera ${m.name}`}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-yellow-300 hover:bg-yellow-400/15 transition-colors"
+                      title="Matikan kamera"
                     >
-                      <VideoOff className="w-3 h-3" />
+                      <VideoOff className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => kickUser(m.userId)}
-                      className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                      title={`Keluarkan ${m.name}`}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-400/15 transition-colors"
+                      title="Keluarkan dari room"
                     >
-                      <UserX className="w-3 h-3" />
+                      <UserX className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 )}
