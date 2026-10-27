@@ -53,5 +53,8 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "overrides": {
+  "undici": "5.28.4"
   }
 }

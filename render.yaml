@@ -12,9 +12,21 @@ services:
         value: production
       - key: PORT
         value: 3000
-      # Isi di Render Dashboard — jangan hardcode di sini:
-      # DATABASE_URL       → Neon connection string (pooler)
-      # JWT_SECRET         → openssl rand -hex 32
-      # TMDB_API_TOKEN     → Bearer token dari themoviedb.org
-      # NEXT_PUBLIC_APP_URL       → https://catinflixx.onrender.com
-      # NEXT_PUBLIC_SOCKET_URL    → https://catinflixx.onrender.com
+      # ─── Isi di Render Dashboard — jangan hardcode di sini ────────────────────
+      # DATABASE_URL
+      #   Neon connection string (pooler)
+      #   Contoh: postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+      #
+      # JWT_SECRET
+      #   String acak minimal 32 karakter
+      #   Generate: openssl rand -hex 32
+      #
+      # TMDB_API_TOKEN
+      #   API Read Access Token (Bearer) dari themoviedb.org/settings/api
+      #
+      # NEXT_PUBLIC_APP_URL
+      #   URL Render kamu, contoh: https://catinflixx.onrender.com
+      #
+      # NEXT_PUBLIC_SOCKET_URL
+      #   Sama dengan NEXT_PUBLIC_APP_URL
+      #   Contoh: https://catinflixx.onrender.com
