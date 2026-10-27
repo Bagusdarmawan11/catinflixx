@@ -6,28 +6,60 @@ import { hashPassword } from "@/lib/auth/password";
 import { signToken } from "@/lib/auth/jwt";
 import { AUTH_CONFIG } from "@/config";
 import { eq } from "drizzle-orm";
+import { checkRateLimit } from "@/lib/security/rateLimit";
+import { withSecurityHeaders } from "@/lib/security/headers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const registerSchema = z.object({
-  name: z.string().min(2, "Nama minimal 2 karakter").max(100),
-  email: z.string().email("Format email tidak valid"),
-  password: z.string().min(8, "Password minimal 8 karakter"),
+  name: z
+    .string()
+    .min(2, "Nama minimal 2 karakter")
+    .max(100, "Nama maksimal 100 karakter")
+    .regex(/^[a-zA-Z0-9\s._'-]+$/, "Nama mengandung karakter tidak diizinkan"),
+  email: z.string().email("Format email tidak valid").max(255),
+  password: z
+    .string()
+    .min(8, "Password minimal 8 karakter")
+    .max(128, "Password terlalu panjang"),
 });
 
+function getClientIp(req: NextRequest): string {
+  return (
+    req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
+    req.headers.get("x-real-ip") ||
+    "unknown"
+  );
+}
+
 export async function POST(req: NextRequest) {
+  const ip = getClientIp(req);
+
+  // Rate limit: 5 register per IP per jam
+  const ipCheck = checkRateLimit(`register:ip:${ip}`, 5, 60 * 60_000, 60 * 60_000);
+  if (!ipCheck.allowed) {
+    const res = NextResponse.json(
+      {
+        success: false,
+        error: `Terlalu banyak percobaan registrasi. Coba lagi dalam ${ipCheck.retryAfterSeconds} detik.`,
+      },
+      { status: 429 }
+    );
+    res.headers.set("Retry-After", String(ipCheck.retryAfterSeconds));
+    return withSecurityHeaders(res);
+  }
+
   try {
     const body = await req.json();
     const result = registerSchema.safeParse(body);
 
     if (!result.success) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: result.error.issues[0].message,
-        },
-        { status: 400 }
+      return withSecurityHeaders(
+        NextResponse.json(
+          { success: false, error: result.error.issues[0].message },
+          { status: 400 }
+        )
       );
     }
 
@@ -41,9 +73,11 @@ export async function POST(req: NextRequest) {
       .limit(1);
 
     if (existing.length > 0) {
-      return NextResponse.json(
-        { success: false, error: "Email sudah terdaftar" },
-        { status: 409 }
+      return withSecurityHeaders(
+        NextResponse.json(
+          { success: false, error: "Email sudah terdaftar" },
+          { status: 409 }
+        )
       );
     }
 
@@ -52,7 +86,7 @@ export async function POST(req: NextRequest) {
     const [newUser] = await db
       .insert(users)
       .values({
-        name,
+        name: name.trim(),
         email: email.toLowerCase(),
         passwordHash,
       })
@@ -90,12 +124,14 @@ export async function POST(req: NextRequest) {
       path: "/",
     });
 
-    return response;
+    return withSecurityHeaders(response);
   } catch (err) {
     console.error("[Auth] Register error:", err);
-    return NextResponse.json(
-      { success: false, error: "Terjadi kesalahan server" },
-      { status: 500 }
+    return withSecurityHeaders(
+      NextResponse.json(
+        { success: false, error: "Terjadi kesalahan server" },
+        { status: 500 }
+      )
     );
   }
 }

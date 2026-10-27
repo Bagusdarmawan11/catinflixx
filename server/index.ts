@@ -194,6 +194,16 @@ const URL_REGEX =
 function containsUrl(text: string): boolean { return URL_REGEX.test(text); }
 function resetUrlRegex() { URL_REGEX.lastIndex = 0; }
 
+// ── Chat spam throttle ────────────────────────────────────────────────────────
+// Key: socketId, Value: timestamp pesan terakhir
+const lastMessageAt = new Map<string, number>();
+const CHAT_COOLDOWN_MS = 1_000; // 1 detik antar pesan
+
+// Bersihkan entry saat socket disconnect agar tidak bocor memori
+function clearChatThrottle(socketId: string) {
+  lastMessageAt.delete(socketId);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getOrCreateRuntime(roomCode: string): RoomRuntime {
   if (!runtimes.has(roomCode)) {
@@ -417,6 +427,15 @@ app.prepare().then(() => {
         const { roomCode, userId, name, message } = data;
         if (!message?.trim()) return;
 
+        // Spam throttle: tolak jika kurang dari CHAT_COOLDOWN_MS sejak pesan terakhir
+        const now = Date.now();
+        const last = lastMessageAt.get(socket.id) ?? 0;
+        if (now - last < CHAT_COOLDOWN_MS) {
+          socket.emit("chat-error", { message: "Pesan terlalu cepat. Tunggu sebentar." });
+          return;
+        }
+        lastMessageAt.set(socket.id, now);
+
         const trimmed = message.trim().slice(0, 300);
         resetUrlRegex();
         const hasUrl = containsUrl(trimmed);
@@ -596,6 +615,9 @@ app.prepare().then(() => {
 
     // ── Disconnect ────────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
+      // Bersihkan chat throttle
+      clearChatThrottle(socket.id);
+
       // Bersihkan VC
       vcParticipants.forEach((vcRoom, roomCode) => {
         if (vcRoom.has(socket.id)) {
