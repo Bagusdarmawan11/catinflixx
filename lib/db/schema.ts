@@ -1,6 +1,7 @@
 import {
   pgTable,
   serial,
+  bigserial,
   text,
   varchar,
   integer,
@@ -27,16 +28,10 @@ export const users = pgTable(
     email: varchar("email", { length: 255 }).notNull(),
     name: varchar("name", { length: 100 }).notNull(),
     passwordHash: text("password_hash").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [
-    uniqueIndex("users_email_idx").on(table.email),
-  ]
+  (table) => [uniqueIndex("users_email_idx").on(table.email)]
 );
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
@@ -45,26 +40,17 @@ export const watchlist = pgTable(
   "watchlist",
   {
     id: serial("id").primaryKey(),
-    userId: integer("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     tmdbId: integer("tmdb_id").notNull(),
     mediaType: mediaTypeEnum("media_type").notNull(),
     title: varchar("title", { length: 500 }).notNull(),
     posterPath: varchar("poster_path", { length: 500 }),
     voteAverage: real("vote_average").notNull().default(0),
     releaseDate: varchar("release_date", { length: 20 }),
-    addedAt: timestamp("added_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // Satu user tidak bisa menambahkan film yang sama dua kali
-    uniqueIndex("watchlist_user_tmdb_idx").on(
-      table.userId,
-      table.tmdbId,
-      table.mediaType
-    ),
+    uniqueIndex("watchlist_user_tmdb_idx").on(table.userId, table.tmdbId, table.mediaType),
     index("watchlist_user_id_idx").on(table.userId),
   ]
 );
@@ -75,21 +61,15 @@ export const watchRooms = pgTable(
   "watch_rooms",
   {
     id: serial("id").primaryKey(),
-    // Kode undangan yang unik dan sulit ditebak
     inviteCode: char("invite_code", { length: 8 }).notNull(),
-    hostId: integer("host_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    hostId: integer("host_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     tmdbId: integer("tmdb_id").notNull(),
     mediaType: mediaTypeEnum("media_type").notNull(),
     title: varchar("title", { length: 500 }).notNull(),
     posterPath: varchar("poster_path", { length: 500 }),
-    // State pemutaran — disimpan untuk sinkronisasi reconnect
     currentTime: real("current_time").notNull().default(0),
     isPlaying: boolean("is_playing").notNull().default(false),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -105,23 +85,33 @@ export const roomMembers = pgTable(
   "room_members",
   {
     id: serial("id").primaryKey(),
-    roomId: integer("room_id")
-      .notNull()
-      .references(() => watchRooms.id, { onDelete: "cascade" }),
-    userId: integer("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    joinedAt: timestamp("joined_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    roomId: integer("room_id").notNull().references(() => watchRooms.id, { onDelete: "cascade" }),
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("room_members_room_user_idx").on(table.roomId, table.userId),
     index("room_members_room_id_idx").on(table.roomId),
     index("room_members_user_id_idx").on(table.userId),
+  ]
+);
+
+// ─── Room Messages (Fix16: chat history persistence) ──────────────────────────
+
+export const roomMessages = pgTable(
+  "room_messages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    roomCode: varchar("room_code", { length: 20 }).notNull(),
+    userId: integer("user_id").notNull().default(0),
+    name: varchar("name", { length: 100 }).notNull(),
+    message: text("message").notNull(),
+    isSystem: boolean("is_system").notNull().default(false),
+    timestamp: timestamp("timestamp", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("room_messages_room_code_ts_idx").on(table.roomCode, table.timestamp),
   ]
 );
 
@@ -134,29 +124,17 @@ export const usersRelations = relations(users, ({ many }) => ({
 }));
 
 export const watchlistRelations = relations(watchlist, ({ one }) => ({
-  user: one(users, {
-    fields: [watchlist.userId],
-    references: [users.id],
-  }),
+  user: one(users, { fields: [watchlist.userId], references: [users.id] }),
 }));
 
 export const watchRoomsRelations = relations(watchRooms, ({ one, many }) => ({
-  host: one(users, {
-    fields: [watchRooms.hostId],
-    references: [users.id],
-  }),
+  host: one(users, { fields: [watchRooms.hostId], references: [users.id] }),
   members: many(roomMembers),
 }));
 
 export const roomMembersRelations = relations(roomMembers, ({ one }) => ({
-  room: one(watchRooms, {
-    fields: [roomMembers.roomId],
-    references: [watchRooms.id],
-  }),
-  user: one(users, {
-    fields: [roomMembers.userId],
-    references: [users.id],
-  }),
+  room: one(watchRooms, { fields: [roomMembers.roomId], references: [watchRooms.id] }),
+  user: one(users, { fields: [roomMembers.userId], references: [users.id] }),
 }));
 
 // ─── Type exports ─────────────────────────────────────────────────────────────
@@ -169,3 +147,5 @@ export type WatchRoom = typeof watchRooms.$inferSelect;
 export type NewWatchRoom = typeof watchRooms.$inferInsert;
 export type RoomMember = typeof roomMembers.$inferSelect;
 export type NewRoomMember = typeof roomMembers.$inferInsert;
+export type RoomMessage = typeof roomMessages.$inferSelect;
+export type NewRoomMessage = typeof roomMessages.$inferInsert;

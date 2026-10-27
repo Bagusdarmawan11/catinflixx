@@ -11,7 +11,6 @@ interface Props {
   connected: boolean;
 }
 
-// Stiker emoji yang bisa dikirim
 const STICKERS = [
   "❤️", "😍", "🥰", "😘", "💕", "💖",
   "😂", "🤣", "😭", "😩", "🥺", "🫶",
@@ -28,17 +27,14 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
   function onScroll() {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const threshold = 60;
     isAtBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+      el.scrollHeight - el.scrollTop - el.clientHeight < 60;
   }
 
   useEffect(() => {
     if (!isAtBottomRef.current) return;
     const el = scrollContainerRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   function submit(e: React.FormEvent) {
@@ -66,14 +62,19 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
     }, 50);
   }
 
+  // Fix16: Timestamp pakai WIB (Asia/Jakarta)
   function formatTime(iso: string) {
-    return new Date(iso).toLocaleTimeString("id-ID", {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    try {
+      return new Date(iso).toLocaleTimeString("id-ID", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "Asia/Jakarta",
+      });
+    } catch {
+      return "";
+    }
   }
 
-  // Deteksi apakah pesan adalah stiker dari daftar STICKERS
   function isStickerMessage(msg: string): boolean {
     return STICKERS.includes(msg.trim());
   }
@@ -96,9 +97,7 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
 
       {/* Members */}
       <div className="px-4 py-2 border-b border-white/10 shrink-0">
-        <p className="text-xs text-gray-400 mb-1.5">
-          Anggota ({members.length})
-        </p>
+        <p className="text-xs text-gray-400 mb-1.5">Anggota ({members.length})</p>
         <div className="flex flex-wrap gap-1.5">
           {members.map((m) => (
             <span
@@ -119,7 +118,7 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
         </div>
       </div>
 
-      {/* Messages — scroll hanya di dalam container ini */}
+      {/* Messages */}
       <div
         ref={scrollContainerRef}
         onScroll={onScroll}
@@ -132,24 +131,14 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
           </p>
         )}
         {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`${msg.isSystem ? "text-center" : ""}`}
-          >
+          <div key={msg.id} className={`${msg.isSystem ? "text-center" : ""}`}>
             {msg.isSystem ? (
-              <span className="text-[11px] text-gray-500 italic">
-                {msg.message}
-              </span>
+              <span className="text-[11px] text-gray-500 italic">{msg.message}</span>
             ) : isStickerMessage(msg.message) ? (
-              /* Render stiker besar */
               <div className="flex flex-col gap-0.5">
-                <span className="text-[11px] text-purple-400 font-medium">
-                  {msg.name}
-                </span>
+                <span className="text-[11px] text-purple-400 font-medium">{msg.name}</span>
                 <span className="text-3xl leading-tight">{msg.message}</span>
-                <span className="text-[10px] text-gray-600">
-                  {formatTime(msg.timestamp)}
-                </span>
+                <span className="text-[10px] text-gray-600">{formatTime(msg.timestamp)}</span>
               </div>
             ) : (
               <div className="flex flex-col gap-0.5">
@@ -161,9 +150,7 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
                     {msg.message}
                   </span>
                 </div>
-                <span className="text-[10px] text-gray-600">
-                  {formatTime(msg.timestamp)}
-                </span>
+                <span className="text-[10px] text-gray-600">{formatTime(msg.timestamp)}</span>
               </div>
             )}
           </div>
@@ -193,20 +180,16 @@ export default function Chat({ messages, members, onSend, connected }: Props) {
         onSubmit={submit}
         className="flex items-center gap-2 px-3 py-2 border-t border-white/10 bg-gray-900 shrink-0"
       >
-        {/* Tombol stiker */}
         <button
           type="button"
           onClick={() => setShowStickers((v) => !v)}
           className={`shrink-0 transition-colors ${
-            showStickers
-              ? "text-purple-400"
-              : "text-gray-500 hover:text-gray-300"
+            showStickers ? "text-purple-400" : "text-gray-500 hover:text-gray-300"
           }`}
           title="Stiker"
         >
           <Smile className="w-5 h-5" />
         </button>
-
         <input
           type="text"
           value={input}

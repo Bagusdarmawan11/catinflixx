@@ -358,20 +358,22 @@ export function useVideoCall({
       setVcParticipants(data.participants);
     };
 
-    // FIX15: force-mute hanya berlaku saat call aktif
+    // FIX15+16: force-mute hanya berlaku saat call aktif; auto-reset toast state setelah 3.5s
     const onForceMute = () => {
       if (!callActiveRef.current) return;
       localStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = false; });
       setMicOn(false);
       setMutedByHost(true);
+      setTimeout(() => setMutedByHost(false), 3500); // reset supaya event berikutnya bisa trigger toast baru
     };
 
-    // FIX15: force-disable-cam hanya berlaku saat call aktif
+    // FIX15+16: force-disable-cam hanya berlaku saat call aktif; auto-reset toast state setelah 3.5s
     const onForceDisableCam = () => {
       if (!callActiveRef.current) return;
       localStreamRef.current?.getVideoTracks().forEach((t) => { t.enabled = false; });
       setCamOn(false);
       setCamDisabledByHost(true);
+      setTimeout(() => setCamDisabledByHost(false), 3500); // reset supaya event berikutnya bisa trigger toast baru
     };
 
     const onSocketConnect = () => {

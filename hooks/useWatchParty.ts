@@ -99,8 +99,17 @@ export function useWatchParty({
       setMembers(memberList);
     });
 
+    // Fix16: Terima chat history saat pertama join/rejoin
+    socket.on("chat-history", (history: ChatMessage[]) => {
+      setMessages(history.slice(-100));
+    });
+
     socket.on("chat-message", (msg: ChatMessage) => {
-      setMessages((prev) => [...prev.slice(-99), msg]);
+      setMessages((prev) => {
+        // Hindari duplikat (history + live message)
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev.slice(-99), msg];
+      });
     });
 
     socket.on("video-state-sync", (state: VideoState) => {
@@ -140,11 +149,7 @@ export function useWatchParty({
   const controlVideo = useCallback(
     (isPlaying: boolean, currentTime: number) => {
       if (!isHost) return;
-      socketRef.current?.emit("video-control", {
-        roomCode,
-        isPlaying,
-        currentTime,
-      });
+      socketRef.current?.emit("video-control", { roomCode, isPlaying, currentTime });
     },
     [roomCode, isHost]
   );
@@ -177,7 +182,6 @@ export function useWatchParty({
     [roomCode, isHost]
   );
 
-  // FIX14: Host matikan kamera user (user harus nyalakan sendiri)
   const disableCamUser = useCallback(
     (targetUserId: number) => {
       if (!isHost) return;

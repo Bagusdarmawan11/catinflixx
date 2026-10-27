@@ -4,6 +4,7 @@ import next from "next";
 import { Server as SocketIOServer } from "socket.io";
 import * as fs from "fs";
 import * as path from "path";
+import { neon } from "@neondatabase/serverless";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = "0.0.0.0";
@@ -11,6 +12,87 @@ const port = parseInt(process.env.PORT || "3000", 10);
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
+
+// ── Neon DB (Fix16: chat history) ────────────────────────────────────────────
+let sql: ReturnType<typeof neon> | null = null;
+function getDb() {
+  if (!sql && process.env.DATABASE_URL) {
+    sql = neon(process.env.DATABASE_URL);
+  }
+  return sql;
+}
+
+interface DbMessage {
+  id: number;
+  room_code: string;
+  user_id: number;
+  name: string;
+  message: string;
+  is_system: boolean;
+  timestamp: string;
+}
+
+async function loadChatHistory(roomCode: string): Promise<ChatMessage[]> {
+  try {
+    const db = getDb();
+    if (!db) return [];
+    const rows = await db`
+      SELECT id, user_id, name, message, is_system, timestamp
+      FROM room_messages
+      WHERE room_code = ${roomCode}
+      ORDER BY timestamp ASC
+      LIMIT 100
+    ` as DbMessage[];
+    return rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      name: r.name,
+      message: r.message,
+      isSystem: r.is_system,
+      timestamp: typeof r.timestamp === "string" ? r.timestamp : new Date(r.timestamp).toISOString(),
+    }));
+  } catch (e) {
+    console.error("[Chat] Failed to load history:", e);
+    return [];
+  }
+}
+
+async function saveChatMessage(
+  roomCode: string,
+  userId: number,
+  name: string,
+  message: string,
+  isSystem: boolean
+): Promise<void> {
+  try {
+    const db = getDb();
+    if (!db) return;
+    await db`
+      INSERT INTO room_messages (room_code, user_id, name, message, is_system)
+      VALUES (${roomCode}, ${userId}, ${name}, ${message}, ${isSystem})
+    `;
+  } catch (e) {
+    console.error("[Chat] Failed to save message:", e);
+  }
+}
+
+// Hapus pesan lama saat room berakhir (opsional, batas 500 pesan per room)
+async function pruneRoomMessages(roomCode: string): Promise<void> {
+  try {
+    const db = getDb();
+    if (!db) return;
+    await db`
+      DELETE FROM room_messages
+      WHERE room_code = ${roomCode}
+        AND id NOT IN (
+          SELECT id FROM room_messages
+          WHERE room_code = ${roomCode}
+          ORDER BY timestamp DESC
+          LIMIT 500
+        )
+    `;
+  } catch {}
+}
 
 // ── Persistent room store ────────────────────────────────────────────────────
 const ROOMS_FILE = path.join("/tmp", "catinflix-rooms.json");
@@ -44,16 +126,12 @@ function loadPersistedRooms(): Map<string, PersistedRoom> {
   return new Map();
 }
 
-// ── Throttle savePersistedRooms ─────────────────────────────────────────────
 let saveThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSave = false;
 
 function savePersistedRooms(map: Map<string, PersistedRoom>, immediate = false) {
   if (immediate) {
-    if (saveThrottleTimer) {
-      clearTimeout(saveThrottleTimer);
-      saveThrottleTimer = null;
-    }
+    if (saveThrottleTimer) { clearTimeout(saveThrottleTimer); saveThrottleTimer = null; }
     pendingSave = false;
     _doSave(map);
     return;
@@ -62,24 +140,29 @@ function savePersistedRooms(map: Map<string, PersistedRoom>, immediate = false) 
   if (!saveThrottleTimer) {
     saveThrottleTimer = setTimeout(() => {
       saveThrottleTimer = null;
-      if (pendingSave) {
-        pendingSave = false;
-        _doSave(map);
-      }
+      if (pendingSave) { pendingSave = false; _doSave(map); }
     }, 10_000);
   }
 }
 
 function _doSave(map: Map<string, PersistedRoom>) {
   try {
-    const arr = Array.from(map.values());
-    fs.writeFileSync(ROOMS_FILE, JSON.stringify(arr, null, 2), "utf-8");
+    fs.writeFileSync(ROOMS_FILE, JSON.stringify(Array.from(map.values()), null, 2), "utf-8");
   } catch (e) {
     console.error("[Rooms] Failed to save rooms:", e);
   }
 }
 
 // ── In-memory runtime state ───────────────────────────────────────────────────
+interface ChatMessage {
+  id: number;
+  userId: number;
+  name: string;
+  message: string;
+  isSystem: boolean;
+  timestamp: string;
+}
+
 interface RoomMember {
   userId: number;
   name: string;
@@ -89,37 +172,32 @@ interface RoomMember {
 
 interface RoomRuntime {
   members: Map<string, RoomMember>;
+  messages: ChatMessage[];           // Fix16: in-memory chat history (fallback)
+  historyLoaded: boolean;            // Fix16: flag — already loaded from DB
   hostDisconnectTimer?: ReturnType<typeof setTimeout>;
 }
 
 const persistedRooms = loadPersistedRooms();
 const runtimes = new Map<string, RoomRuntime>();
 
-// Expose ke global supaya API route bisa akses
 (global as any).__catinfixRooms = persistedRooms;
 
-// Video call participants: roomCode → Map<socketId, {userId, userName}>
 const vcParticipants = new Map<
   string,
   Map<string, { userId: number; userName: string }>
 >();
 
-// ── URL filter helper ─────────────────────────────────────────────────────────
+// ── URL filter ────────────────────────────────────────────────────────────────
 const URL_REGEX =
   /(?:https?:\/\/|www\.)[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?/gi;
 
-function containsUrl(text: string): boolean {
-  return URL_REGEX.test(text);
-}
-
-function resetUrlRegex() {
-  URL_REGEX.lastIndex = 0;
-}
+function containsUrl(text: string): boolean { return URL_REGEX.test(text); }
+function resetUrlRegex() { URL_REGEX.lastIndex = 0; }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getOrCreateRuntime(roomCode: string): RoomRuntime {
   if (!runtimes.has(roomCode)) {
-    runtimes.set(roomCode, { members: new Map() });
+    runtimes.set(roomCode, { members: new Map(), messages: [], historyLoaded: false });
   }
   return runtimes.get(roomCode)!;
 }
@@ -133,15 +211,35 @@ function broadcastMembers(io: SocketIOServer, roomCode: string, runtime: RoomRun
   io.to(roomCode).emit("room-members", list);
 }
 
-function systemMsg(io: SocketIOServer, roomCode: string, message: string) {
-  io.to(roomCode).emit("chat-message", {
+// Fix16: timestamp WIB helper untuk system message
+function nowWib(): string {
+  return new Date().toISOString();
+}
+
+// Fix16: systemMsg sekarang juga simpan ke DB dan ke runtime.messages
+async function systemMsg(
+  io: SocketIOServer,
+  roomCode: string,
+  message: string,
+  runtime?: RoomRuntime
+) {
+  const msg: ChatMessage = {
     id: Date.now() + Math.random(),
     userId: 0,
     name: "Sistem",
     message,
     isSystem: true,
-    timestamp: new Date().toISOString(),
-  });
+    timestamp: nowWib(),
+  };
+  io.to(roomCode).emit("chat-message", msg);
+
+  if (runtime) {
+    runtime.messages.push(msg);
+    if (runtime.messages.length > 100) runtime.messages.shift();
+  }
+
+  // Simpan ke DB async (fire and forget)
+  saveChatMessage(roomCode, 0, "Sistem", message, true).catch(() => {});
 }
 
 function deleteRoom(roomCode: string) {
@@ -167,8 +265,7 @@ function broadcastVcParticipants(io: SocketIOServer, roomCode: string) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 app.prepare().then(() => {
   const httpServer = createServer((req, res) => {
-    const parsedUrl = parse(req.url!, true);
-    handle(req, res, parsedUrl);
+    handle(req, res, parse(req.url!, true));
   });
 
   const io = new SocketIOServer(httpServer, {
@@ -181,14 +278,13 @@ app.prepare().then(() => {
   });
 
   io.on("connection", (socket) => {
-    const clientUserId =
-      parseInt(socket.handshake.query.userId as string) || 0;
+    const clientUserId = parseInt(socket.handshake.query.userId as string) || 0;
     console.log(`[Socket] Connected: ${socket.id} (userId=${clientUserId})`);
 
     // ── Join Room ─────────────────────────────────────────────────────────────
     socket.on(
       "join-room",
-      (data: {
+      async (data: {
         roomCode: string;
         userId: number;
         name: string;
@@ -220,6 +316,7 @@ app.prepare().then(() => {
         persisted.lastActiveAt = Date.now();
 
         const runtime = getOrCreateRuntime(roomCode);
+
         if (isHost && runtime.hostDisconnectTimer) {
           clearTimeout(runtime.hostDisconnectTimer);
           runtime.hostDisconnectTimer = undefined;
@@ -247,13 +344,35 @@ app.prepare().then(() => {
         broadcastMembers(io, roomCode, runtime);
         broadcastVcParticipants(io, roomCode);
 
-        if (!wasAlreadyInRoom && !isReconnect) {
-          systemMsg(io, roomCode, `${name} bergabung ke room`);
+        // Fix16: Load chat history dari DB (hanya sekali per runtime)
+        if (!runtime.historyLoaded) {
+          runtime.historyLoaded = true;
+          const history = await loadChatHistory(roomCode);
+          runtime.messages = history.slice(-100);
+        }
+        // Kirim chat history ke user yang baru join/rejoin
+        if (runtime.messages.length > 0) {
+          socket.emit("chat-history", runtime.messages);
         }
 
-        console.log(
-          `[Socket] ${name} ${wasAlreadyInRoom ? "re-joined" : "joined"} room ${roomCode}`
-        );
+        // Fix16: System message hanya untuk user pertama kali join (bukan reconnect)
+        if (!wasAlreadyInRoom && !isReconnect) {
+          const joinMsg = `${name} bergabung ke room`;
+          const msgObj: ChatMessage = {
+            id: Date.now() + Math.random(),
+            userId: 0,
+            name: "Sistem",
+            message: joinMsg,
+            isSystem: true,
+            timestamp: nowWib(),
+          };
+          io.to(roomCode).emit("chat-message", msgObj);
+          runtime.messages.push(msgObj);
+          if (runtime.messages.length > 100) runtime.messages.shift();
+          saveChatMessage(roomCode, 0, "Sistem", joinMsg, true).catch(() => {});
+        }
+
+        console.log(`[Socket] ${name} ${wasAlreadyInRoom ? "re-joined" : "joined"} room ${roomCode}`);
       }
     );
 
@@ -263,8 +382,10 @@ app.prepare().then(() => {
       if (!persisted) return;
       if (persisted.hostUserId !== data.userId) return;
 
-      systemMsg(io, data.roomCode, "Host telah mengakhiri room");
+      const runtime = runtimes.get(data.roomCode);
+      systemMsg(io, data.roomCode, "Host telah mengakhiri room", runtime ?? undefined);
       io.to(data.roomCode).emit("room-ended");
+      pruneRoomMessages(data.roomCode).catch(() => {});
       deleteRoom(data.roomCode);
     });
 
@@ -285,7 +406,6 @@ app.prepare().then(() => {
         };
         persisted.lastActiveAt = Date.now();
         savePersistedRooms(persistedRooms);
-
         socket.to(data.roomCode).emit("video-state-sync", persisted.videoState);
       }
     );
@@ -298,7 +418,6 @@ app.prepare().then(() => {
         if (!message?.trim()) return;
 
         const trimmed = message.trim().slice(0, 300);
-
         resetUrlRegex();
         const hasUrl = containsUrl(trimmed);
         resetUrlRegex();
@@ -307,17 +426,25 @@ app.prepare().then(() => {
           ? "⚠️ Hai! Untuk menjaga keamanan dan kenyamanan bersama, kami tidak mengizinkan pengiriman tautan di ruang obrolan ini. Terima kasih atas pengertianmu ya! 😊"
           : trimmed;
 
-        const payload = {
+        const payload: ChatMessage & { isUrlWarning?: boolean } = {
           id: Date.now() + Math.random(),
           userId,
           name,
           message: finalMessage,
           isSystem: false,
           isUrlWarning: hasUrl,
-          timestamp: new Date().toISOString(),
+          timestamp: nowWib(),
         };
 
         io.to(roomCode).emit("chat-message", payload);
+
+        // Fix16: Simpan ke runtime + DB
+        const runtime = runtimes.get(roomCode);
+        if (runtime) {
+          runtime.messages.push(payload);
+          if (runtime.messages.length > 100) runtime.messages.shift();
+        }
+        saveChatMessage(roomCode, userId, name, finalMessage, false).catch(() => {});
       }
     );
 
@@ -346,37 +473,25 @@ app.prepare().then(() => {
       }
     );
 
-    // ── FIX: Kick User ────────────────────────────────────────────────────────
-    // Host bisa mengeluarkan user dari room (seperti Google Meet)
+    // ── Kick User ─────────────────────────────────────────────────────────────
     socket.on("kick-user", (data: { roomCode: string; targetUserId: number }) => {
       const persisted = persistedRooms.get(data.roomCode);
       const runtime = runtimes.get(data.roomCode);
       if (!persisted || !runtime) return;
-
-      // Hanya host yang boleh kick
       const host = runtime.members.get(socket.id);
       if (!host?.isHost) return;
 
-      // Cari socket target
       let targetSocketId: string | null = null;
       let targetName = "Pengguna";
       runtime.members.forEach((m, sid) => {
-        if (m.userId === data.targetUserId) {
-          targetSocketId = sid;
-          targetName = m.name;
-        }
+        if (m.userId === data.targetUserId) { targetSocketId = sid; targetName = m.name; }
       });
-
       if (!targetSocketId) return;
 
-      // Beritahu user yang di-kick
       io.to(targetSocketId).emit("kicked");
-
-      // Hapus dari daftar member
       runtime.members.delete(targetSocketId);
       broadcastMembers(io, data.roomCode, runtime);
 
-      // Bersihkan dari VC juga
       const vcRoom = vcParticipants.get(data.roomCode);
       if (vcRoom?.has(targetSocketId)) {
         vcRoom.delete(targetSocketId);
@@ -384,83 +499,56 @@ app.prepare().then(() => {
         broadcastVcParticipants(io, data.roomCode);
       }
 
-      systemMsg(io, data.roomCode, `${targetName} telah dikeluarkan dari room oleh host`);
+      systemMsg(io, data.roomCode, `${targetName} telah dikeluarkan dari room oleh host`, runtime);
       console.log(`[Rooms] ${targetName} kicked from ${data.roomCode} by host`);
     });
 
-    // ── FIX: Mute User Mic ────────────────────────────────────────────────────
-    // Host bisa mute mic user lain (tidak bisa unmute — seperti Google Meet)
+    // ── Mute User ─────────────────────────────────────────────────────────────
     socket.on("mute-user", (data: { roomCode: string; targetUserId: number }) => {
       const persisted = persistedRooms.get(data.roomCode);
       const runtime = runtimes.get(data.roomCode);
       if (!persisted || !runtime) return;
-
-      // Hanya host yang boleh mute
       const host = runtime.members.get(socket.id);
       if (!host?.isHost) return;
 
-      // Cari socket target
       let targetSocketId: string | null = null;
       runtime.members.forEach((m, sid) => {
         if (m.userId === data.targetUserId) targetSocketId = sid;
       });
-
       if (!targetSocketId) return;
-
-      // Kirim perintah force-mute ke target
       io.to(targetSocketId).emit("force-mute");
       console.log(`[Rooms] User ${data.targetUserId} force-muted in ${data.roomCode}`);
     });
 
-    // ── FIX14: Disable Cam User ───────────────────────────────────────────────
-    // Host bisa matikan kamera user lain (user harus nyalakan sendiri)
+    // ── Disable Cam User ──────────────────────────────────────────────────────
     socket.on("disable-cam-user", (data: { roomCode: string; targetUserId: number }) => {
       const persisted = persistedRooms.get(data.roomCode);
       const runtime = runtimes.get(data.roomCode);
       if (!persisted || !runtime) return;
-
-      // Hanya host yang boleh
       const host = runtime.members.get(socket.id);
       if (!host?.isHost) return;
 
-      // Cari socket target
       let targetSocketId: string | null = null;
       runtime.members.forEach((m, sid) => {
         if (m.userId === data.targetUserId) targetSocketId = sid;
       });
-
       if (!targetSocketId) return;
-
-      // Kirim perintah force-disable-cam ke target
       io.to(targetSocketId).emit("force-disable-cam");
       console.log(`[Rooms] User ${data.targetUserId} camera force-disabled in ${data.roomCode}`);
     });
 
-    // ════════════════════════════════════════════════════════════════════════
-    // ── WebRTC Signaling ──────────────────────────────────────────────────
-    // ════════════════════════════════════════════════════════════════════════
-
-    socket.on(
-      "vc:join",
-      (data: { roomCode: string; userId: number; userName: string }) => {
-        const { roomCode, userId, userName } = data;
-        if (!vcParticipants.has(roomCode)) vcParticipants.set(roomCode, new Map());
-        const vcRoom = vcParticipants.get(roomCode)!;
-
-        vcRoom.forEach((_, existingSocketId) => {
-          io.to(existingSocketId).emit("vc:user-joined", {
-            socketId: socket.id,
-            userId,
-            userName,
-          });
-        });
-
-        vcRoom.set(socket.id, { userId, userName });
-        console.log(`[VC] ${userName} joined vc in room ${roomCode} (${vcRoom.size} total)`);
-
-        broadcastVcParticipants(io, roomCode);
-      }
-    );
+    // ── WebRTC Signaling ──────────────────────────────────────────────────────
+    socket.on("vc:join", (data: { roomCode: string; userId: number; userName: string }) => {
+      const { roomCode, userId, userName } = data;
+      if (!vcParticipants.has(roomCode)) vcParticipants.set(roomCode, new Map());
+      const vcRoom = vcParticipants.get(roomCode)!;
+      vcRoom.forEach((_, existingSocketId) => {
+        io.to(existingSocketId).emit("vc:user-joined", { socketId: socket.id, userId, userName });
+      });
+      vcRoom.set(socket.id, { userId, userName });
+      console.log(`[VC] ${userName} joined vc in room ${roomCode} (${vcRoom.size} total)`);
+      broadcastVcParticipants(io, roomCode);
+    });
 
     socket.on(
       "vc:offer",
@@ -508,6 +596,7 @@ app.prepare().then(() => {
 
     // ── Disconnect ────────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
+      // Bersihkan VC
       vcParticipants.forEach((vcRoom, roomCode) => {
         if (vcRoom.has(socket.id)) {
           vcRoom.delete(socket.id);
@@ -517,6 +606,7 @@ app.prepare().then(() => {
         }
       });
 
+      // Bersihkan dari room
       runtimes.forEach((runtime, roomCode) => {
         const member = runtime.members.get(socket.id);
         if (!member) return;
@@ -527,16 +617,29 @@ app.prepare().then(() => {
           console.log(`[Rooms] Host disconnected from ${roomCode}, starting 5min grace period`);
           runtime.hostDisconnectTimer = setTimeout(() => {
             const rt = runtimes.get(roomCode);
-            const hostBack = rt
-              ? Array.from(rt.members.values()).some((m) => m.isHost)
-              : false;
+            const hostBack = rt ? Array.from(rt.members.values()).some((m) => m.isHost) : false;
             if (!hostBack) {
-              systemMsg(io, roomCode, "Host telah meninggalkan room. Room berakhir.");
+              systemMsg(io, roomCode, "Host telah meninggalkan room. Room berakhir.", rt ?? undefined);
               io.to(roomCode).emit("room-ended");
               deleteRoom(roomCode);
             }
           }, 5 * 60 * 1000);
         } else {
+          // Fix16: Emit leave system message untuk non-host
+          const leaveMsg = `${member.name} keluar dari room`;
+          const msgObj: ChatMessage = {
+            id: Date.now() + Math.random(),
+            userId: 0,
+            name: "Sistem",
+            message: leaveMsg,
+            isSystem: true,
+            timestamp: nowWib(),
+          };
+          io.to(roomCode).emit("chat-message", msgObj);
+          runtime.messages.push(msgObj);
+          if (runtime.messages.length > 100) runtime.messages.shift();
+          saveChatMessage(roomCode, 0, "Sistem", leaveMsg, true).catch(() => {});
+
           broadcastMembers(io, roomCode, runtime);
         }
       });
@@ -546,8 +649,6 @@ app.prepare().then(() => {
   });
 
   httpServer.listen(port, hostname, () => {
-    console.log(
-      `> CatinFlix ready on http://${hostname}:${port} [${dev ? "dev" : "prod"}]`
-    );
+    console.log(`> CatinFlix ready on http://${hostname}:${port} [${dev ? "dev" : "prod"}]`);
   });
 });
