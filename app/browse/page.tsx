@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Search, SlidersHorizontal, X, ChevronDown, Loader2 } from "lucide-react";
-import MediaGrid from "@/components/movie/MediaGrid";
+import MediaGrid, { SkeletonGrid } from "@/components/movie/MediaGrid";
 
 interface Genre {
   id: number;
@@ -21,44 +21,51 @@ interface MediaItem {
 }
 
 const SORT_OPTIONS = [
-  { value: "popularity.desc", label: "Paling Populer" },
-  { value: "vote_average.desc", label: "Rating Tertinggi" },
-  { value: "release_date.desc", label: "Terbaru" },
-  { value: "release_date.asc", label: "Terlama" },
-  { value: "revenue.desc", label: "Pendapatan Tertinggi" },
+  { value: "popularity.desc",    label: "Paling Populer" },
+  { value: "vote_average.desc",  label: "Rating Tertinggi" },
+  { value: "release_date.desc",  label: "Terbaru" },
+  { value: "release_date.asc",   label: "Terlama" },
+  { value: "revenue.desc",       label: "Pendapatan Tertinggi" },
 ];
 
 function BrowseContent() {
   const searchParams = useSearchParams();
-  const router = useRouter();
+  const router       = useRouter();
 
-  const [results, setResults] = useState<MediaItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
-  const [totalResults, setTotalResults] = useState(0);
-  const [genres, setGenres] = useState<Genre[]>([]);
-  const [showFilters, setShowFilters] = useState(false);
+  const [results,       setResults]       = useState<MediaItem[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [loadingMore,   setLoadingMore]   = useState(false);
+  const [page,          setPage]          = useState(1);
+  const [hasMore,       setHasMore]       = useState(true);
+  const [totalResults,  setTotalResults]  = useState(0);
+  const [genres,        setGenres]        = useState<Genre[]>([]);
+  const [showFilters,   setShowFilters]   = useState(false);
 
-  // Filter state from URL params
-  const query = searchParams.get("q") || "";
-  const type = (searchParams.get("type") || "all") as "movie" | "tv" | "all";
+  /* sentinel ref for IntersectionObserver */
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const pageRef     = useRef(1);
+  const hasMoreRef  = useRef(true);
+  const loadingRef  = useRef(false);
+
+  /* ── URL params ── */
+  const query = searchParams.get("q")     || "";
+  const type  = (searchParams.get("type") || "all") as "movie" | "tv" | "all";
   const genre = searchParams.get("genre") || "";
-  const sort = searchParams.get("sort") || "popularity.desc";
-  const year = searchParams.get("year") || "";
+  const sort  = searchParams.get("sort")  || "popularity.desc";
+  const year  = searchParams.get("year")  || "";
 
-  // Local filter state for UI
-  const [localType, setLocalType] = useState(type);
-  const [localGenre, setLocalGenre] = useState(genre);
-  const [localSort, setLocalSort] = useState(sort);
-  const [localYear, setLocalYear] = useState(year);
-  const [searchInput, setSearchInput] = useState(query);
+  /* local filter state */
+  const [localType,    setLocalType]    = useState(type);
+  const [localGenre,   setLocalGenre]   = useState(genre);
+  const [localSort,    setLocalSort]    = useState(sort);
+  const [localYear,    setLocalYear]    = useState(year);
+  const [searchInput,  setSearchInput]  = useState(query);
 
   function updateParams(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
     Object.entries(updates).forEach(([k, v]) => {
       if (v) params.set(k, v);
-      else params.delete(k);
+      else   params.delete(k);
     });
     params.delete("page");
     router.push(`/browse?${params.toString()}`);
@@ -66,13 +73,13 @@ function BrowseContent() {
 
   function applyFilters() {
     const updates: Record<string, string> = {
-      type: localType !== "all" ? localType : "",
+      type:  localType !== "all" ? localType : "",
       genre: localGenre,
-      sort: localSort,
-      year: localYear,
+      sort:  localSort,
+      year:  localYear,
     };
     if (searchInput.trim()) updates.q = searchInput.trim();
-    else updates.q = "";
+    else                     updates.q = "";
     updateParams(updates);
     setShowFilters(false);
   }
@@ -82,51 +89,59 @@ function BrowseContent() {
     updateParams({ q: searchInput.trim() });
   }
 
+  /* ── Core fetch ── */
   const fetchResults = useCallback(
     async (p: number, append = false) => {
-      setLoading(true);
+      if (loadingRef.current) return;
+      loadingRef.current = true;
+
+      if (append) setLoadingMore(true);
+      else        setLoading(true);
+
       try {
         let url: string;
         if (query.length >= 2) {
           url = `/api/movies/search?q=${encodeURIComponent(query)}&page=${p}`;
         } else {
-          const params = new URLSearchParams({
-            page: String(p),
-            sort,
-          });
+          const params = new URLSearchParams({ page: String(p), sort });
           if (type !== "all") params.set("type", type);
-          else params.set("type", "movie"); // default for discover
+          else                params.set("type", "movie");
           if (genre) params.set("genre", genre);
-          if (year) params.set("year", year);
+          if (year)  params.set("year",  year);
           url = `/api/movies/discover?${params}`;
         }
 
-        const res = await fetch(url);
+        const res  = await fetch(url);
         if (!res.ok) throw new Error("Gagal memuat");
         const data = await res.json();
 
-        const items = data.results || [];
+        const items      = data.results || [];
+        const morePages  = p < (data.totalPages || 1);
         setTotalResults(data.total || items.length);
-        setHasMore(p < (data.totalPages || 1));
+        setHasMore(morePages);
+        hasMoreRef.current = morePages;
 
-        if (append) {
-          setResults((prev) => [...prev, ...items]);
-        } else {
-          setResults(items);
-        }
+        if (append) setResults((prev) => [...prev, ...items]);
+        else        setResults(items);
       } catch {
         if (!append) setResults([]);
+        hasMoreRef.current = false;
+        setHasMore(false);
       }
-      setLoading(false);
+
+      if (append) setLoadingMore(false);
+      else        setLoading(false);
+
+      loadingRef.current = false;
     },
     [query, type, genre, sort, year]
   );
 
-  // Fetch genres
+  /* ── Fetch genres ── */
   useEffect(() => {
     async function fetchGenres() {
       try {
-        const t = type === "all" ? "movie" : type;
+        const t   = type === "all" ? "movie" : type;
         const res = await fetch(`/api/movies/genres?type=${t}`);
         if (res.ok) {
           const data = await res.json();
@@ -137,30 +152,56 @@ function BrowseContent() {
     fetchGenres();
   }, [type]);
 
-  // Fetch on param change
+  /* ── Reset + initial fetch on param change ── */
   useEffect(() => {
     setPage(1);
+    pageRef.current    = 1;
+    hasMoreRef.current = true;
+    setHasMore(true);
+    setResults([]);
     fetchResults(1, false);
     setLocalType(type);
     setLocalGenre(genre);
     setLocalSort(sort);
     setLocalYear(year);
     setSearchInput(query);
-  }, [query, type, genre, sort, year, fetchResults]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, type, genre, sort, year]);
 
-  function loadMore() {
-    const next = page + 1;
-    setPage(next);
-    fetchResults(next, true);
-  }
+  /* ── IntersectionObserver for infinite scroll ── */
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (
+          entry.isIntersecting &&
+          hasMoreRef.current &&
+          !loadingRef.current
+        ) {
+          const next = pageRef.current + 1;
+          pageRef.current = next;
+          setPage(next);
+          fetchResults(next, true);
+        }
+      },
+      { rootMargin: "200px" }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [fetchResults]);
+
+  /* keep hasMoreRef in sync */
+  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
 
   const pageTitle = query
     ? `Hasil pencarian: "${query}"`
-    : type === "movie"
-    ? "Film"
-    : type === "tv"
-    ? "Serial TV"
-    : "Semua Konten";
+    : type === "movie" ? "Film"
+    : type === "tv"    ? "Serial TV"
+    :                    "Semua Konten";
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
@@ -186,10 +227,7 @@ function BrowseContent() {
           {searchInput && (
             <button
               type="button"
-              onClick={() => {
-                setSearchInput("");
-                updateParams({ q: "" });
-              }}
+              onClick={() => { setSearchInput(""); updateParams({ q: "" }); }}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
             >
               <X className="w-4 h-4" />
@@ -251,9 +289,7 @@ function BrowseContent() {
                 >
                   <option value="">Semua Genre</option>
                   {genres.map((g) => (
-                    <option key={g.id} value={String(g.id)}>
-                      {g.name}
-                    </option>
+                    <option key={g.id} value={String(g.id)}>{g.name}</option>
                   ))}
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
@@ -270,9 +306,7 @@ function BrowseContent() {
                   className="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-red-500 appearance-none"
                 >
                   {SORT_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
+                    <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
@@ -297,10 +331,8 @@ function BrowseContent() {
           <div className="flex justify-end gap-3 pt-2 border-t border-gray-800">
             <button
               onClick={() => {
-                setLocalType("all");
-                setLocalGenre("");
-                setLocalSort("popularity.desc");
-                setLocalYear("");
+                setLocalType("all"); setLocalGenre("");
+                setLocalSort("popularity.desc"); setLocalYear("");
               }}
               className="text-gray-400 hover:text-white text-sm px-4 py-2 transition-colors"
             >
@@ -316,13 +348,13 @@ function BrowseContent() {
         </div>
       )}
 
-      {/* Quick type filter chips */}
+      {/* Quick type chips */}
       {!query && (
         <div className="flex gap-2 mb-6 flex-wrap">
           {[
-            { value: "", label: "Semua" },
-            { value: "movie", label: "Film" },
-            { value: "tv", label: "Serial" },
+            { value: "",       label: "Semua" },
+            { value: "movie",  label: "Film"  },
+            { value: "tv",     label: "Serial" },
           ].map((t) => (
             <button
               key={t.value}
@@ -342,7 +374,7 @@ function BrowseContent() {
       {/* Grid */}
       <MediaGrid
         items={results}
-        loading={loading && page === 1}
+        loading={loading}
         emptyMessage={
           query
             ? `Tidak ada hasil untuk "${query}"`
@@ -350,22 +382,27 @@ function BrowseContent() {
         }
       />
 
-      {/* Load more */}
-      {!loading && hasMore && results.length > 0 && (
-        <div className="flex justify-center mt-10">
-          <button
-            onClick={loadMore}
-            className="bg-gray-800 hover:bg-gray-700 text-white px-8 py-3 rounded-xl font-semibold transition-colors flex items-center gap-2"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Memuat...
-              </>
-            ) : (
-              "Muat Lebih Banyak"
-            )}
-          </button>
+      {/* Append skeleton saat load more */}
+      {loadingMore && (
+        <div className="mt-6">
+          <SkeletonGrid />
+        </div>
+      )}
+
+      {/* Infinite scroll sentinel */}
+      <div ref={sentinelRef} className="h-10 mt-4" />
+
+      {/* End of results indicator */}
+      {!loading && !loadingMore && !hasMore && results.length > 0 && (
+        <p className="text-center text-gray-600 text-sm py-6">
+          Semua konten sudah dimuat — {results.length} item
+        </p>
+      )}
+
+      {/* Loading spinner fallback saat scroll */}
+      {loadingMore && (
+        <div className="flex justify-center py-4">
+          <Loader2 className="w-6 h-6 text-gray-500 animate-spin" />
         </div>
       )}
     </div>
@@ -378,12 +415,9 @@ export default function BrowsePage() {
       <Suspense
         fallback={
           <div className="max-w-7xl mx-auto px-4 py-8">
-            <div className="h-8 bg-gray-800 rounded animate-pulse w-48 mb-6" />
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-              {Array.from({ length: 10 }).map((_, i) => (
-                <div key={i} className="aspect-[2/3] bg-gray-800 rounded-xl animate-pulse" />
-              ))}
-            </div>
+            <div className="h-8 skeleton-shimmer rounded-lg w-48 mb-2" />
+            <div className="h-4 skeleton-shimmer rounded w-32 mb-8" />
+            <SkeletonGrid />
           </div>
         }
       >

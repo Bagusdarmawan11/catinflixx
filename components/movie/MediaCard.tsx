@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { Star, Play, Bookmark, BookmarkCheck, Tv, Film } from "lucide-react";
+import { useToast } from "@/components/ui/toast";
 
 interface MediaCardProps {
   id: number;
@@ -31,6 +32,7 @@ export default function MediaCard({
   const [hovered, setHovered] = useState(false);
   const [watchlisted, setWatchlisted] = useState(inWatchlist);
   const [loadingWl, setLoadingWl] = useState(false);
+  const { toast } = useToast();
 
   const year = releaseDate ? new Date(releaseDate).getFullYear() : "—";
   const rating = voteAverage ? voteAverage.toFixed(1) : "N/A";
@@ -42,8 +44,8 @@ export default function MediaCard({
     if (loadingWl) return;
     setLoadingWl(true);
 
-    const optimistic = !watchlisted;
-    setWatchlisted(optimistic);
+    const willAdd = !watchlisted;
+    setWatchlisted(willAdd); // optimistic
 
     try {
       const method = watchlisted ? "DELETE" : "POST";
@@ -52,17 +54,27 @@ export default function MediaCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tmdbId: id, mediaType, title, posterPath }),
       });
+
       if (res.status === 401) {
-        setWatchlisted(!optimistic); // revert
+        setWatchlisted(!willAdd);
         window.location.href = "/login";
         return;
       }
+
       if (!res.ok) {
-        setWatchlisted(!optimistic); // revert on error
+        setWatchlisted(!willAdd);
+        toast("Gagal memperbarui watchlist. Coba lagi.", "error");
+      } else {
+        toast(
+          willAdd ? `"${title}" ditambahkan ke Watchlist` : `"${title}" dihapus dari Watchlist`,
+          willAdd ? "success" : "info"
+        );
       }
     } catch {
-      setWatchlisted(!optimistic);
+      setWatchlisted(!willAdd);
+      toast("Koneksi gagal. Coba lagi.", "error");
     }
+
     setLoadingWl(false);
   }
 
@@ -111,11 +123,25 @@ export default function MediaCard({
           </span>
         </div>
 
-        {/* Watchlist button — always show if watchlisted, else show on hover */}
+        {/* Rating badge — hidden on hover OR when watchlisted (button takes its place) */}
+        {voteAverage > 0 && !watchlisted && (
+          <div
+            className={`absolute top-2 right-2 transition-opacity duration-200 pointer-events-none ${
+              hovered ? "opacity-0" : "opacity-100"
+            }`}
+          >
+            <div className="flex items-center gap-1 bg-black/60 px-2 py-0.5 rounded-full">
+              <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+              <span className="text-white text-xs font-medium">{rating}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Watchlist button — always visible if in watchlist, else on hover */}
         <button
           onClick={handleWatchlist}
           disabled={loadingWl}
-          className={`absolute top-2 right-2 p-1.5 rounded-full transition-all duration-200 ${
+          className={`absolute top-2 right-2 p-1.5 rounded-full transition-all duration-200 z-10 ${
             watchlisted
               ? "bg-red-600 text-white opacity-100"
               : "bg-black/50 text-white opacity-0 group-hover:opacity-100"
@@ -129,17 +155,7 @@ export default function MediaCard({
           )}
         </button>
 
-        {/* Rating badge — hide on hover */}
-        {voteAverage > 0 && (
-          <div className={`absolute top-2 right-2 transition-opacity duration-200 ${hovered ? "opacity-0" : "opacity-100"} ${watchlisted ? "hidden" : ""}`}>
-            <div className="flex items-center gap-1 bg-black/60 px-2 py-0.5 rounded-full">
-              <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
-              <span className="text-white text-xs font-medium">{rating}</span>
-            </div>
-          </div>
-        )}
-
-        {/* Hover overlay */}
+        {/* Hover overlay content */}
         <div
           className={`absolute inset-0 flex flex-col justify-end p-3 transition-opacity duration-300 ${
             hovered ? "opacity-100" : "opacity-0"

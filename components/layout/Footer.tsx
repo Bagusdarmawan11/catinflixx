@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Film, ExternalLink } from "lucide-react";
+import Image from "next/image";
+import { ExternalLink } from "lucide-react";
 
 export default function Footer() {
   return (
@@ -8,13 +9,14 @@ export default function Footer() {
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-8">
           {/* Brand */}
           <div className="space-y-4">
-            <Link href="/" className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center">
-                <Film className="w-5 h-5 text-white" />
-              </div>
-              <span className="text-white font-bold text-xl">
-                Catin<span className="text-red-500">Flix</span>
-              </span>
+            <Link href="/" className="flex items-center">
+              <Image
+                src="/logo.png"
+                alt="CatinFlix"
+                width={160}
+                height={64}
+                className="h-11 w-auto object-contain"
+              />
             </Link>
             <p className="text-gray-500 text-sm leading-relaxed">
               Platform streaming film dan serial dengan fitur Watch Party untuk nonton bareng teman-teman.

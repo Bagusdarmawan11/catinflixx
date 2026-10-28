@@ -20,9 +20,22 @@ interface MediaGridProps {
 function SkeletonCard() {
   return (
     <div className="space-y-2">
-      <div className="aspect-[2/3] rounded-xl bg-gray-800 animate-pulse" />
-      <div className="h-4 bg-gray-800 rounded animate-pulse w-3/4" />
-      <div className="h-3 bg-gray-800 rounded animate-pulse w-1/2" />
+      {/* Poster placeholder */}
+      <div className="aspect-[2/3] rounded-xl skeleton-shimmer" />
+      {/* Title line */}
+      <div className="h-3.5 skeleton-shimmer rounded-md w-4/5" />
+      {/* Year line */}
+      <div className="h-3 skeleton-shimmer rounded-md w-2/5" />
+    </div>
+  );
+}
+
+function SkeletonGrid() {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+      {Array.from({ length: 12 }).map((_, i) => (
+        <SkeletonCard key={i} />
+      ))}
     </div>
   );
 }
@@ -32,11 +45,7 @@ export default function MediaGrid({ items, title, loading, emptyMessage }: Media
     return (
       <section>
         {title && <h2 className="text-white text-xl font-bold mb-4">{title}</h2>}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
+        <SkeletonGrid />
       </section>
     );
   }
@@ -66,3 +75,6 @@ export default function MediaGrid({ items, title, loading, emptyMessage }: Media
     </section>
   );
 }
+
+/* Named export so browse page can use the skeleton independently */
+export { SkeletonGrid };

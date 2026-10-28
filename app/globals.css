@@ -2,6 +2,34 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Shimmer skeleton animation ── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    #1f2937 25%,
+    #374151 50%,
+    #1f2937 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* ── Toast slide-in / slide-out ── */
+@keyframes toast-in {
+  from { transform: translateX(calc(100% + 1rem)); opacity: 0; }
+  to   { transform: translateX(0);                 opacity: 1; }
+}
+@keyframes toast-out {
+  from { transform: translateX(0);                 opacity: 1; }
+  to   { transform: translateX(calc(100% + 1rem)); opacity: 0; }
+}
+.toast-enter { animation: toast-in  0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+.toast-leave { animation: toast-out 0.24s ease-in               forwards; }
+
 /* Hide scrollbar for horizontal scroll rows */
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
