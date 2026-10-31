@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
 import { verifyToken, signToken } from "@/lib/auth/jwt";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import { hashPassword, comparePassword } from "@/lib/auth/password";
 import { AUTH_CONFIG } from "@/config";
 import { eq } from "drizzle-orm";
 import { profileUpdateSchema } from "@/lib/validations";
@@ -121,7 +121,7 @@ export async function PATCH(req: NextRequest) {
           { status: 400 }
         );
       }
-      const isValid = await verifyPassword(currentPassword, user.passwordHash);
+      const isValid = await comparePassword(currentPassword, user.passwordHash);
       if (!isValid) {
         return NextResponse.json(
           { success: false, error: "Password lama tidak sesuai" },
