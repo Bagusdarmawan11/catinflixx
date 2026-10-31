@@ -1,27 +1,27 @@
-import type { Server as SocketIOServer, Socket } from "socket.io";
-
 /**
- * Watch Party Socket.IO handlers.
- * Full implementation will be completed in Stage 7.
- * This scaffold ensures the server starts without errors.
+ * Watch Party Socket Handlers
+ *
+ * Semua logika socket Watch Party (join-room, video-control, chat,
+ * kick, VC signaling, dll.) sudah dipindahkan langsung ke server/index.ts
+ * agar lebih mudah dikelola dalam satu tempat.
+ *
+ * File ini sengaja dikosongkan untuk menghindari duplikasi handler
+ * (io.on("connection") ganda yang menyebabkan event terpanggil dua kali).
+ *
+ * Jika ingin memecah handler ke file terpisah di masa depan,
+ * gunakan pola:
+ *
+ *   // server/socket/watchPartyHandlers.ts
+ *   export function registerWatchPartyHandlers(io: Server, socket: Socket, ...) {
+ *     socket.on("join-room", (...) => { ... });
+ *     socket.on("video-control", (...) => { ... });
+ *     // dst.
+ *   }
+ *
+ *   // server/index.ts
+ *   io.on("connection", (socket) => {
+ *     registerWatchPartyHandlers(io, socket, persistedRooms, runtimes);
+ *   });
  */
-export function registerWatchPartyHandlers(io: SocketIOServer): void {
-  io.on("connection", (socket: Socket) => {
-    const clientIp =
-      socket.handshake.headers["x-forwarded-for"] ||
-      socket.handshake.address;
 
-    console.log(`[Socket] Client connected: ${socket.id} from ${clientIp}`);
-
-    socket.on("disconnect", (reason) => {
-      console.log(`[Socket] Client disconnected: ${socket.id} — ${reason}`);
-    });
-
-    // Watch Party events — implemented in Stage 7
-    socket.on("room:join", () => {
-      socket.emit("error:not_implemented", {
-        message: "Watch Party coming soon",
-      });
-    });
-  });
-}
+export {};

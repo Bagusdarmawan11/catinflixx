@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ExternalLink, Maximize, Minimize } from "lucide-react";
+import { ExternalLink, Maximize, Minimize, Lock, Loader2 } from "lucide-react";
+import { detectVideoType, extractYouTubeId, type VideoType } from "@/lib/utils";
 import type { VideoState } from "@/hooks/useWatchParty";
 
 interface Props {
@@ -15,16 +16,10 @@ interface Props {
   fullscreenContainerRef?: React.RefObject<HTMLDivElement>;
 }
 
-const DEFAULT_PLAYER_ID = "catinflix-yt-player";
+/** Toleransi selisih waktu (detik) sebelum paksa seek */
+const SYNC_THRESHOLD = 2;
 
-function extractYouTubeId(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname.includes("youtu.be")) return parsed.pathname.slice(1);
-    if (parsed.hostname.includes("youtube.com")) return parsed.searchParams.get("v");
-  } catch {}
-  return null;
-}
+const DEFAULT_PLAYER_ID = "catinflix-yt-player";
 
 export default function VideoPlayer({
   videoUrl,
@@ -37,33 +32,32 @@ export default function VideoPlayer({
   fullscreenContainerRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const playerRef = useRef<any>(null);
-  const playerReadyRef = useRef(false);
-  const [apiReady, setApiReady] = useState(false);
-  const [playerReady, setPlayerReady] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const syncLockRef = useRef(false);
 
+  // YouTube
+  const ytPlayerRef = useRef<any>(null);
+  const [ytApiReady, setYtApiReady] = useState(false);
+  const [ytPlayerReady, setYtPlayerReady] = useState(false);
+
+  // HLS / Direct
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<any>(null);
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Stable refs untuk callbacks
+  const isHostRef = useRef(isHost);
+  const onControlRef = useRef(onControl);
   const videoStateRef = useRef(videoState);
+  useEffect(() => { isHostRef.current = isHost; }, [isHost]);
+  useEffect(() => { onControlRef.current = onControl; }, [onControl]);
   useEffect(() => { videoStateRef.current = videoState; }, [videoState]);
 
-  const videoId = extractYouTubeId(videoUrl);
+  const videoType: VideoType = detectVideoType(videoUrl);
+  const youtubeId = videoType === "youtube" ? extractYouTubeId(videoUrl) : null;
 
-  // ─── FULLSCREEN ───────────────────────────────────────────────────────────
-  /*
-   * FIX FULLSCREEN YOUTUBE:
-   * Masalah sebelumnya: YouTube iframe tidak mengisi layar penuh karena
-   * container-nya tidak di-stretch saat fullscreen.
-   *
-   * Sekarang:
-   * 1. fullscreenContainerRef (outer div seluruh halaman) di-fullscreen,
-   *    bukan hanya div video — agar FloatingVC ikut muncul.
-   * 2. YouTube iframe diberi style width/height 100% via CSS + attribute.
-   * 3. page.tsx memberi class "w-full h-full" ke area video saat isFullscreen=true,
-   *    sehingga YouTube iframe benar-benar mengisi seluruh layar.
-   * 4. playerVars.fs=1 diaktifkan agar tombol fullscreen native YouTube juga tersedia
-   *    sebagai fallback.
-   */
+  // ── FULLSCREEN ──────────────────────────────────────────────────────────────
   const enterFullscreen = useCallback(async () => {
     const el = fullscreenContainerRef?.current ?? containerRef.current;
     if (!el) return;
@@ -71,7 +65,6 @@ export default function VideoPlayer({
       if (el.requestFullscreen) await el.requestFullscreen();
       else if ((el as any).webkitRequestFullscreen) (el as any).webkitRequestFullscreen();
     } catch {}
-    // Kunci orientasi landscape di mobile
     setTimeout(async () => {
       try {
         const scr = window.screen as any;
@@ -82,218 +75,335 @@ export default function VideoPlayer({
 
   const exitFullscreen = useCallback(async () => {
     try {
-      const doc = document as any;
-      if (doc.fullscreenElement || doc.webkitFullscreenElement) {
-        if (document.exitFullscreen) await document.exitFullscreen();
-        else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
-      }
-    } catch {}
-    try {
-      const scr = window.screen as any;
-      if (scr.orientation?.unlock) scr.orientation.unlock();
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else if ((document as any).webkitExitFullscreen) (document as any).webkitExitFullscreen();
     } catch {}
   }, []);
 
-  // Deteksi fullscreen keluar dari tombol ESC / swipe native browser
   useEffect(() => {
-    const handleFSChange = () => {
-      const doc = document as any;
-      const nativeFS = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
-      if (!nativeFS && isFullscreen) {
-        setIsFullscreen(false);
-        onFullscreenChange?.(false);
-      }
+    const handler = () => {
+      const fs = !!(
+        document.fullscreenElement || (document as any).webkitFullscreenElement
+      );
+      setIsFullscreen(fs);
+      onFullscreenChange?.(fs);
     };
-    document.addEventListener("fullscreenchange", handleFSChange);
-    document.addEventListener("webkitfullscreenchange", handleFSChange);
+    document.addEventListener("fullscreenchange", handler);
+    document.addEventListener("webkitfullscreenchange", handler);
     return () => {
-      document.removeEventListener("fullscreenchange", handleFSChange);
-      document.removeEventListener("webkitfullscreenchange", handleFSChange);
+      document.removeEventListener("fullscreenchange", handler);
+      document.removeEventListener("webkitfullscreenchange", handler);
     };
-  }, [isFullscreen, onFullscreenChange]);
+  }, [onFullscreenChange]);
 
-  const toggleFullscreen = useCallback(() => {
-    const next = !isFullscreen;
-    setIsFullscreen(next);
-    onFullscreenChange?.(next);
-    if (next) enterFullscreen();
-    else exitFullscreen();
-  }, [isFullscreen, onFullscreenChange, enterFullscreen, exitFullscreen]);
-
+  // ── YOUTUBE — Load API ───────────────────────────────────────────────────────
   useEffect(() => {
-    return () => { exitFullscreen(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (videoType !== "youtube") return;
+    if ((window as any).YT?.Player) { setYtApiReady(true); return; }
 
-  // ─── YOUTUBE IFRAME API ───────────────────────────────────────────────────
-  useEffect(() => {
-    if ((window as any).YT?.Player) { setApiReady(true); return; }
-    if (document.querySelector('script[src*="youtube.com/iframe_api"]')) {
-      const prev = (window as any).onYouTubeIframeAPIReady;
-      (window as any).onYouTubeIframeAPIReady = () => {
-        if (typeof prev === "function") prev();
-        setApiReady(true);
-      };
-      return;
+    const existing = document.getElementById("yt-api-script");
+    if (!existing) {
+      const tag = document.createElement("script");
+      tag.id = "yt-api-script";
+      tag.src = "https://www.youtube.com/iframe_api";
+      document.head.appendChild(tag);
     }
-    const tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(tag);
-    (window as any).onYouTubeIframeAPIReady = () => setApiReady(true);
-  }, []);
+    const prev = (window as any).onYouTubeIframeAPIReady;
+    (window as any).onYouTubeIframeAPIReady = () => {
+      setYtApiReady(true);
+      prev?.();
+    };
+    return () => {
+      if ((window as any).onYouTubeIframeAPIReady === setYtApiReady) {
+        delete (window as any).onYouTubeIframeAPIReady;
+      }
+    };
+  }, [videoType]);
 
+  // ── YOUTUBE — Init Player ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!apiReady || !videoId) return;
-    setPlayerReady(false);
-    playerReadyRef.current = false;
+    if (videoType !== "youtube" || !ytApiReady || !youtubeId) return;
 
-    const timer = setTimeout(() => {
-      const el = document.getElementById(playerId);
-      if (!el) return;
-      if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch {}
-        playerRef.current = null;
+    setYtPlayerReady(false);
+    setLoading(true);
+
+    // Bersihkan player lama
+    if (ytPlayerRef.current) {
+      try { ytPlayerRef.current.destroy(); } catch {}
+      ytPlayerRef.current = null;
+    }
+
+    // Pastikan div container ada
+    const divId = playerId;
+    let div = document.getElementById(divId);
+    if (!div) {
+      div = document.createElement("div");
+      div.id = divId;
+      containerRef.current?.appendChild(div);
+    } else {
+      containerRef.current?.appendChild(div);
+    }
+
+    const player = new (window as any).YT.Player(divId, {
+      videoId: youtubeId,
+      width: "100%",
+      height: "100%",
+      playerVars: {
+        controls: isHost ? 1 : 0,
+        fs: 1,
+        rel: 0,
+        modestbranding: 1,
+        iv_load_policy: 3,
+        enablejsapi: 1,
+        playsinline: 1,
+      },
+      events: {
+        onReady: () => {
+          setYtPlayerReady(true);
+          setLoading(false);
+        },
+        onStateChange: (e: any) => {
+          if (!isHostRef.current) return;
+          const YT = (window as any).YT;
+          if (e.data === YT.PlayerState.PLAYING) {
+            onControlRef.current(true, player.getCurrentTime());
+          } else if (e.data === YT.PlayerState.PAUSED) {
+            onControlRef.current(false, player.getCurrentTime());
+          }
+        },
+        onError: () => setLoading(false),
+      },
+    });
+    ytPlayerRef.current = player;
+
+    return () => {
+      try { player.destroy(); } catch {}
+      ytPlayerRef.current = null;
+      setYtPlayerReady(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoType, ytApiReady, youtubeId, playerId]);
+
+  // ── YOUTUBE — Sync videoState ────────────────────────────────────────────────
+  useEffect(() => {
+    if (videoType !== "youtube" || !ytPlayerReady || !ytPlayerRef.current) return;
+
+    const player = ytPlayerRef.current;
+    const { isPlaying, currentTime, updatedAt } = videoState;
+    const YT = (window as any).YT;
+
+    try {
+      const elapsed = (Date.now() - updatedAt) / 1000;
+      const targetTime = isPlaying ? currentTime + elapsed : currentTime;
+      const curTime: number = player.getCurrentTime?.() ?? 0;
+
+      if (Math.abs(curTime - targetTime) > SYNC_THRESHOLD) {
+        player.seekTo?.(targetTime, true);
       }
 
-      playerRef.current = new (window as any).YT.Player(playerId, {
-        width: "100%",
-        height: "100%",
-        videoId,
-        playerVars: {
-          autoplay: 0,
-          controls: 1,
-          modestbranding: 1,
-          rel: 0,
-          disablekb: isHost ? 0 : 1,
-          // FIX: fs=1 agar tombol fullscreen native YouTube tersedia sebagai fallback
-          fs: 1,
-          playsinline: 1,
-        },
-        events: {
-          onReady: (e: any) => {
-            playerRef.current = e.target;
-            try {
-              const iframe = e.target.getIframe();
-              if (iframe) {
-                // FIX: Paksa iframe mengisi 100% width dan height container-nya
-                iframe.style.cssText =
-                  "width:100%!important;height:100%!important;display:block;position:absolute;top:0;left:0;border:none;";
-                iframe.setAttribute("width", "100%");
-                iframe.setAttribute("height", "100%");
-              }
-            } catch {}
+      const state: number = player.getPlayerState?.() ?? -1;
+      if (isPlaying && state !== YT?.PlayerState.PLAYING) {
+        player.playVideo?.();
+      } else if (!isPlaying && state === YT?.PlayerState.PLAYING) {
+        player.pauseVideo?.();
+      }
+    } catch {}
+  }, [videoState, ytPlayerReady, videoType]);
 
-            if (!isHost) {
-              const state = videoStateRef.current;
-              const serverTime = state.currentTime + (Date.now() - state.updatedAt) / 1000;
-              try {
-                e.target.seekTo(serverTime, true);
-                if (state.isPlaying) e.target.playVideo();
-                else e.target.pauseVideo();
-              } catch {}
-            }
-
-            playerReadyRef.current = true;
-            setPlayerReady(true);
-          },
-          onStateChange: (e: any) => {
-            const YT = (window as any).YT?.PlayerState;
-            if (!YT) return;
-            if (isHost && !syncLockRef.current) {
-              const { PLAYING, PAUSED, ENDED, UNSTARTED } = YT;
-              const relevantStates = [PLAYING, PAUSED, ENDED, UNSTARTED];
-              if (!relevantStates.includes(e.data)) return;
-              const playing = e.data === PLAYING;
-              const ct = playerRef.current?.getCurrentTime?.() ?? 0;
-              onControl(playing, ct);
-            }
-          },
-        },
-      });
-    }, 200);
-
-    return () => { clearTimeout(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiReady, videoId]);
-
-  // Sync state dari socket (untuk guest)
+  // ── HLS / DIRECT — Setup player ─────────────────────────────────────────────
   useEffect(() => {
-    if (!playerRef.current || isHost || !playerReady) return;
-    syncLockRef.current = true;
-    const p = playerRef.current;
-    const serverTime = videoState.currentTime + (Date.now() - videoState.updatedAt) / 1000;
-    const clientTime = p.getCurrentTime?.() ?? 0;
-    if (Math.abs(serverTime - clientTime) > 3) p.seekTo?.(serverTime, true);
-    if (videoState.isPlaying) p.playVideo?.();
-    else p.pauseVideo?.();
-    setTimeout(() => { syncLockRef.current = false; }, 500);
-  }, [videoState, isHost, playerReady]);
+    if (videoType !== "hls" && videoType !== "direct") return;
+    const video = videoRef.current;
+    if (!video) return;
 
-  function toggleMute() {
-    if (!playerRef.current) return;
-    const isMuted = playerRef.current.isMuted?.();
-    if (isMuted) playerRef.current.unMute?.();
-    else playerRef.current.mute?.();
-  }
+    setPlayerReady(false);
+    setLoading(true);
 
-  if (!videoId) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full bg-gray-950 gap-4 text-gray-400">
-        <p className="text-lg">URL video tidak valid</p>
-        <a
-          href={videoUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 text-purple-400 hover:underline text-sm"
-        >
-          <ExternalLink className="w-4 h-4" /> Buka di browser
-        </a>
-      </div>
-    );
-  }
+    // Bersihkan HLS instance lama
+    if (hlsRef.current) {
+      try { hlsRef.current.destroy(); } catch {}
+      hlsRef.current = null;
+    }
 
+    async function setup() {
+      if (videoType === "hls") {
+        try {
+          // Dynamic import — hls.js harus sudah diinstall (npm install hls.js)
+          const HlsModule = await import("hls.js");
+          const Hls = HlsModule.default;
+          if (Hls.isSupported()) {
+            const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+            hls.loadSource(videoUrl);
+            hls.attachMedia(video!);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              setPlayerReady(true);
+              setLoading(false);
+            });
+            hls.on(Hls.Events.ERROR, (_: any, data: any) => {
+              if (data.fatal) setLoading(false);
+            });
+            hlsRef.current = hls;
+          } else if (video!.canPlayType("application/vnd.apple.mpegurl")) {
+            // Safari native HLS
+            video!.src = videoUrl;
+            setPlayerReady(true);
+            setLoading(false);
+          } else {
+            setLoading(false);
+          }
+        } catch {
+          // hls.js belum terinstall — coba native
+          video!.src = videoUrl;
+          setPlayerReady(true);
+          setLoading(false);
+        }
+      } else {
+        // Direct video (mp4, webm, dll.)
+        video!.src = videoUrl;
+        setPlayerReady(true);
+        setLoading(false);
+      }
+    }
+
+    setup();
+
+    return () => {
+      try { hlsRef.current?.destroy(); } catch {}
+      hlsRef.current = null;
+      if (video) {
+        video.pause();
+        video.src = "";
+        video.load();
+      }
+      setPlayerReady(false);
+    };
+  }, [videoUrl, videoType]);
+
+  // ── HLS / DIRECT — Sync videoState ──────────────────────────────────────────
+  useEffect(() => {
+    if (videoType === "youtube" || !playerReady) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const { isPlaying, currentTime, updatedAt } = videoState;
+    const elapsed = (Date.now() - updatedAt) / 1000;
+    const targetTime = isPlaying ? currentTime + elapsed : currentTime;
+
+    if (Math.abs(video.currentTime - targetTime) > SYNC_THRESHOLD) {
+      video.currentTime = targetTime;
+    }
+
+    if (isPlaying && video.paused) {
+      video.play().catch(() => {});
+    } else if (!isPlaying && !video.paused) {
+      video.pause();
+    }
+  }, [videoState, playerReady, videoType]);
+
+  // ── HLS / DIRECT — Host event handlers ──────────────────────────────────────
+  const handleVideoPlay = useCallback(() => {
+    if (!isHostRef.current) return;
+    onControlRef.current(true, videoRef.current?.currentTime ?? 0);
+  }, []);
+
+  const handleVideoPause = useCallback(() => {
+    if (!isHostRef.current) return;
+    onControlRef.current(false, videoRef.current?.currentTime ?? 0);
+  }, []);
+
+  const handleVideoSeeked = useCallback(() => {
+    if (!isHostRef.current) return;
+    const v = videoRef.current;
+    onControlRef.current(!(v?.paused ?? true), v?.currentTime ?? 0);
+  }, []);
+
+  const handleVideoCanPlay = useCallback(() => {
+    setLoading(false);
+  }, []);
+
+  // ── RENDER ───────────────────────────────────────────────────────────────────
   return (
-    <div ref={containerRef} className="relative bg-black h-full w-full">
-      {/* FIX: Container iframe harus absolute inset-0 agar mengisi seluruh parent */}
-      <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
-        <div
-          id={playerId}
-          style={{
-            width: "100%",
-            height: "100%",
-            display: "block",
-            position: "relative",
-          }}
-        />
-      </div>
+    <div
+      ref={containerRef}
+      className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden"
+    >
+      {/* ── YouTube Player ───────────────────────────────────────────────── */}
+      {videoType === "youtube" && (
+        <div id={playerId} className="w-full h-full" />
+      )}
 
-      {/* Loading overlay untuk guest sebelum player ready */}
-      {!playerReady && !isHost && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10 pointer-events-none">
-          <div className="text-center">
-            <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-            <p className="text-xs text-gray-400">Menghubungkan video...</p>
-          </div>
+      {/* ── HLS / Direct Video ───────────────────────────────────────────── */}
+      {(videoType === "hls" || videoType === "direct") && (
+        <>
+          <video
+            ref={videoRef}
+            className="w-full h-full"
+            controls={isHost}
+            playsInline
+            onPlay={handleVideoPlay}
+            onPause={handleVideoPause}
+            onSeeked={handleVideoSeeked}
+            onCanPlay={handleVideoCanPlay}
+            controlsList="nodownload nofullscreen"
+            onContextMenu={(e) => e.preventDefault()}
+          />
+          {/* Overlay untuk non-host: cegah interaksi */}
+          {!isHost && (
+            <div
+              className="absolute inset-0 cursor-default select-none"
+              onContextMenu={(e) => e.preventDefault()}
+            />
+          )}
+        </>
+      )}
+
+      {/* ── URL tidak dikenali ────────────────────────────────────────────── */}
+      {videoType === "unknown" && (
+        <div className="flex flex-col items-center gap-3 text-gray-400 p-8 text-center">
+          <ExternalLink className="w-10 h-10" />
+          <p className="text-sm font-medium">Format URL tidak dikenali</p>
+          <p className="text-xs text-gray-600">
+            Dukung: YouTube, HLS (.m3u8), MP4/WebM
+          </p>
+          <a
+            href={videoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-red-400 underline text-xs mt-1"
+          >
+            Buka di tab baru
+          </a>
         </div>
       )}
 
-      {/* Tombol fullscreen — masuk & keluar di pojok kanan bawah */}
+      {/* ── Loading spinner ───────────────────────────────────────────────── */}
+      {loading && videoType !== "unknown" && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 gap-3">
+          <Loader2 className="w-10 h-10 text-red-500 animate-spin" />
+          <p className="text-gray-400 text-sm truncate max-w-xs px-4">{videoTitle}</p>
+        </div>
+      )}
+
+      {/* ── Non-host indicator ───────────────────────────────────────────── */}
+      {!isHost && !loading && videoType !== "unknown" && (
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/60 rounded-lg px-2.5 py-1.5 pointer-events-none">
+          <Lock className="w-3 h-3 text-gray-400" />
+          <span className="text-gray-400 text-xs">Kontrol hanya untuk host</span>
+        </div>
+      )}
+
+      {/* ── Fullscreen button ─────────────────────────────────────────────── */}
       <button
-        onClick={toggleFullscreen}
-        className="absolute bottom-2 right-2 z-20 bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5 transition-colors"
+        onClick={isFullscreen ? exitFullscreen : enterFullscreen}
+        className="absolute bottom-3 right-3 z-20 bg-black/60 hover:bg-black/80 text-white p-2 rounded-lg transition-colors"
         title={isFullscreen ? "Keluar fullscreen" : "Fullscreen"}
       >
-        {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+        {isFullscreen ? (
+          <Minimize className="w-4 h-4" />
+        ) : (
+          <Maximize className="w-4 h-4" />
+        )}
       </button>
-
-      {/* Info host-only hint (saat tidak fullscreen) */}
-      {!isFullscreen && !isHost && (
-        <div className="absolute bottom-2 left-2 z-10 pointer-events-none">
-          <span className="text-[10px] text-gray-500 bg-black/40 px-1.5 py-0.5 rounded">
-            Hanya host yang bisa mengontrol video
-          </span>
-        </div>
-      )}
     </div>
   );
 }

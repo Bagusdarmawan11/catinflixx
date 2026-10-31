@@ -1,22 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { watchPartyRooms } from "@/lib/db/schema";
+import { and, eq, gt } from "drizzle-orm";
+import { verifyToken } from "@/lib/auth/jwt";
+import { AUTH_CONFIG } from "@/config";
 
 export const runtime = "nodejs";
-
-/*
- * FIX FATAL: Sinkronisasi roomRegistry antara API route dan Socket.IO server.
- *
- * Sebelumnya: API route punya global.__roomRegistry sendiri (in-memory Next.js),
- * sedangkan server/index.ts punya persistedRooms sendiri.
- * Akibatnya: user/tamu yang cek room via GET /api/rooms/[code] selalu dapat 404
- * karena room hanya ada di Socket.IO store, bukan di registry API.
- *
- * Fix: server/index.ts mengekspos persistedRooms-nya via global.__catinfixRooms.
- * Karena custom server dan Next.js route handlers berjalan dalam 1 process,
- * global variable ini bisa diakses dari sini.
- *
- * Fallback: kalau __catinfixRooms belum tersedia (race condition saat cold start),
- * cek juga __roomRegistry lama supaya backward compatible.
- */
 
 interface PersistedRoom {
   code: string;
@@ -28,72 +17,158 @@ interface PersistedRoom {
   videoState?: { isPlaying: boolean; currentTime: number; updatedAt: number };
 }
 
-function getRoomRegistry(): Map<string, PersistedRoom> | undefined {
-  // Prioritas 1: registry dari Socket.IO server (fix utama)
-  const socketRooms = (global as any).__catinfixRooms as Map<string, PersistedRoom> | undefined;
-  if (socketRooms && socketRooms.size >= 0) return socketRooms;
-
-  // Fallback: registry lama dari API route
-  return (global as any).__roomRegistry as Map<string, PersistedRoom> | undefined;
+/** Coba ambil dari in-memory store Socket.IO server (lebih fresh) */
+function getRoomFromMemory(code: string): PersistedRoom | undefined {
+  const socketRooms = (global as any).__catinfixRooms as
+    | Map<string, PersistedRoom>
+    | undefined;
+  return socketRooms?.get(code);
 }
 
-// GET /api/rooms/[code] — cek apakah room valid
+// ─── GET /api/rooms/[code] — validasi room ────────────────────────────────────
+
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { code: string } }
 ) {
   try {
     const code = params.code.toUpperCase();
-    const registry = getRoomRegistry();
 
-    if (!registry) {
-      // Server belum sepenuhnya boot, beri status 503 bukan 404
-      return NextResponse.json(
-        { success: false, error: "Server sedang memuat, coba lagi sebentar" },
-        { status: 503 }
-      );
+    // 1. Cek in-memory dulu (cepat)
+    const memRoom = getRoomFromMemory(code);
+    if (memRoom) {
+      const lastActivity = memRoom.lastActiveAt ?? memRoom.createdAt;
+      const expired = lastActivity < Date.now() - 24 * 60 * 60 * 1000;
+      if (!expired) {
+        return NextResponse.json({
+          success: true,
+          room: {
+            code: memRoom.code,
+            hostUserId: memRoom.hostUserId,
+            videoUrl: memRoom.videoUrl,
+            videoTitle: memRoom.videoTitle,
+            videoState: memRoom.videoState,
+          },
+        });
+      }
     }
 
-    const room = registry.get(code);
+    // 2. Fallback ke DB
+    const now = new Date();
+    const [room] = await db
+      .select()
+      .from(watchPartyRooms)
+      .where(
+        and(
+          eq(watchPartyRooms.code, code as any),
+          gt(watchPartyRooms.expiresAt, now)
+        )
+      )
+      .limit(1);
 
     if (!room) {
       return NextResponse.json(
-        { success: false, error: "Room tidak ditemukan" },
+        { success: false, error: "Room tidak ditemukan atau sudah berakhir" },
         { status: 404 }
       );
     }
 
-    // Cek expired: pakai lastActiveAt kalau ada (lebih akurat), fallback ke createdAt
-    const lastActivity = room.lastActiveAt ?? room.createdAt;
-    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
-    if (lastActivity < twentyFourHoursAgo) {
-      registry.delete(code);
-      return NextResponse.json(
-        { success: false, error: "Room sudah berakhir" },
-        { status: 404 }
-      );
+    // Sync ke in-memory agar request berikutnya lebih cepat
+    const socketRooms = (global as any).__catinfixRooms as
+      | Map<string, PersistedRoom>
+      | undefined;
+    if (socketRooms && !socketRooms.has(code)) {
+      socketRooms.set(code, {
+        code: room.code,
+        hostUserId: room.hostUserId,
+        videoUrl: room.videoUrl,
+        videoTitle: room.videoTitle,
+        createdAt: room.createdAt.getTime(),
+        lastActiveAt: Date.now(),
+        videoState: {
+          isPlaying: room.isPlaying,
+          currentTime: room.currentTime,
+          updatedAt: Date.now(),
+        },
+      });
     }
 
-    return NextResponse.json({ success: true, room });
-  } catch {
+    return NextResponse.json({
+      success: true,
+      room: {
+        code: room.code,
+        hostUserId: room.hostUserId,
+        videoUrl: room.videoUrl,
+        videoTitle: room.videoTitle,
+        videoState: {
+          isPlaying: room.isPlaying,
+          currentTime: room.currentTime,
+          updatedAt: Date.now(),
+        },
+      },
+    });
+  } catch (err) {
+    console.error("[Rooms] GET error:", err);
     return NextResponse.json(
-      { success: false, error: "Gagal mengambil room" },
+      { success: false, error: "Gagal mengambil data room" },
       { status: 500 }
     );
   }
 }
 
-// DELETE /api/rooms/[code] — tutup room (host only)
+// ─── DELETE /api/rooms/[code] — tutup room (host only) ───────────────────────
+
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { code: string } }
 ) {
   try {
     const code = params.code.toUpperCase();
-    const registry = getRoomRegistry();
-    registry?.delete(code);
+
+    // Verifikasi auth
+    const token = req.cookies.get(AUTH_CONFIG.cookieName)?.value;
+    if (!token) {
+      return NextResponse.json(
+        { success: false, error: "Tidak terautentikasi" },
+        { status: 401 }
+      );
+    }
+    const payload = await verifyToken(token);
+    if (!payload) {
+      return NextResponse.json(
+        { success: false, error: "Token tidak valid" },
+        { status: 401 }
+      );
+    }
+
+    // Pastikan hanya host yang bisa hapus
+    const [room] = await db
+      .select({ hostUserId: watchPartyRooms.hostUserId })
+      .from(watchPartyRooms)
+      .where(eq(watchPartyRooms.code, code as any))
+      .limit(1);
+
+    if (room && room.hostUserId !== payload.userId) {
+      return NextResponse.json(
+        { success: false, error: "Hanya host yang bisa menutup room" },
+        { status: 403 }
+      );
+    }
+
+    // Hapus dari DB
+    await db
+      .delete(watchPartyRooms)
+      .where(eq(watchPartyRooms.code, code as any));
+
+    // Hapus dari in-memory
+    const socketRooms = (global as any).__catinfixRooms as
+      | Map<string, any>
+      | undefined;
+    socketRooms?.delete(code);
+
     return NextResponse.json({ success: true });
-  } catch {
+  } catch (err) {
+    console.error("[Rooms] DELETE error:", err);
     return NextResponse.json(
       { success: false, error: "Gagal menghapus room" },
       { status: 500 }

@@ -55,7 +55,7 @@ export const watchlist = pgTable(
   ]
 );
 
-// ─── Watch Rooms ─────────────────────────────────────────────────────────────
+// ─── Watch Rooms (TMDB-linked, legacy) ───────────────────────────────────────
 
 export const watchRooms = pgTable(
   "watch_rooms",
@@ -97,7 +97,7 @@ export const roomMembers = pgTable(
   ]
 );
 
-// ─── Room Messages (Fix16: chat history persistence) ──────────────────────────
+// ─── Room Messages ────────────────────────────────────────────────────────────
 
 export const roomMessages = pgTable(
   "room_messages",
@@ -115,12 +115,39 @@ export const roomMessages = pgTable(
   ]
 );
 
+// ─── Watch Party Rooms (Socket-based, supports any URL) ──────────────────────
+// Tabel baru untuk persistensi room Watch Party (YouTube, HLS, MP4, dll.)
+// Gunakan `npm run db:push` setelah menambahkan tabel ini.
+
+export const watchPartyRooms = pgTable(
+  "watch_party_rooms",
+  {
+    id: serial("id").primaryKey(),
+    code: char("code", { length: 6 }).notNull(),
+    hostUserId: integer("host_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    videoUrl: varchar("video_url", { length: 2000 }).notNull(),
+    videoTitle: varchar("video_title", { length: 500 }).notNull().default("Watch Party"),
+    isPlaying: boolean("is_playing").notNull().default(false),
+    currentTime: real("current_time").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("watch_party_rooms_code_idx").on(table.code),
+    index("watch_party_rooms_host_idx").on(table.hostUserId),
+    index("watch_party_rooms_expires_at_idx").on(table.expiresAt),
+  ]
+);
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const usersRelations = relations(users, ({ many }) => ({
   watchlist: many(watchlist),
   hostedRooms: many(watchRooms),
   roomMemberships: many(roomMembers),
+  watchPartyRooms: many(watchPartyRooms),
 }));
 
 export const watchlistRelations = relations(watchlist, ({ one }) => ({
@@ -137,6 +164,10 @@ export const roomMembersRelations = relations(roomMembers, ({ one }) => ({
   user: one(users, { fields: [roomMembers.userId], references: [users.id] }),
 }));
 
+export const watchPartyRoomsRelations = relations(watchPartyRooms, ({ one }) => ({
+  host: one(users, { fields: [watchPartyRooms.hostUserId], references: [users.id] }),
+}));
+
 // ─── Type exports ─────────────────────────────────────────────────────────────
 
 export type User = typeof users.$inferSelect;
@@ -149,3 +180,5 @@ export type RoomMember = typeof roomMembers.$inferSelect;
 export type NewRoomMember = typeof roomMembers.$inferInsert;
 export type RoomMessage = typeof roomMessages.$inferSelect;
 export type NewRoomMessage = typeof roomMessages.$inferInsert;
+export type WatchPartyRoom = typeof watchPartyRooms.$inferSelect;
+export type NewWatchPartyRoom = typeof watchPartyRooms.$inferInsert;
