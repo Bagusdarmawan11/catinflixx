@@ -82,7 +82,7 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json();
     const result = profileUpdateSchema.safeParse(body);
     if (!result.success) {
-      const firstError = result.error.errors[0];
+      const firstError = result.error.issues[0];
       return NextResponse.json(
         { success: false, error: firstError.message },
         { status: 400 }
