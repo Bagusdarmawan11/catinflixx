@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 // GET /api/watchlist — ambil semua watchlist user
 export async function GET() {
   try {
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const token = cookieStore.get("catinflix_session")?.value;
     if (!token) {
       return NextResponse.json({ success: false, error: "Tidak terautentikasi" }, { status: 401 });
@@ -36,7 +36,7 @@ export async function GET() {
 // POST /api/watchlist — tambah item
 export async function POST(req: NextRequest) {
   try {
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const token = cookieStore.get("catinflix_session")?.value;
     if (!token) {
       return NextResponse.json({ success: false, error: "Tidak terautentikasi" }, { status: 401 });
@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
 // DELETE /api/watchlist — hapus item
 export async function DELETE(req: NextRequest) {
   try {
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const token = cookieStore.get("catinflix_session")?.value;
     if (!token) {
       return NextResponse.json({ success: false, error: "Tidak terautentikasi" }, { status: 401 });

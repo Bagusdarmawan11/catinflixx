@@ -44,7 +44,7 @@ async function generateUniqueCode(): Promise<string> {
 
 export async function POST(req: NextRequest) {
   try {
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const token = cookieStore.get("catinflix_session")?.value;
     if (!token) {
       return NextResponse.json(
@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   try {
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const token = cookieStore.get("catinflix_session")?.value;
     if (!token) {
       return NextResponse.json(
